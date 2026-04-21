@@ -1,0 +1,247 @@
+@import "leaflet/dist/leaflet.css";
+
+:root {
+  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  color: #c0caf5;
+  background: #1a1b26;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.app {
+  height: 100%;
+  display: grid;
+  grid-template-rows: 56px 1fr;
+  background: #1a1b26;
+}
+
+.toolbar {
+  background: #24283b;
+  border-bottom: 1px solid #414868;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+}
+
+.toolbar button,
+.panel button {
+  border: 0;
+  border-radius: 8px;
+  background: #c5d0e8;
+  color: #0f172a;
+  font-weight: 700;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+
+.toolbar button:hover,
+.panel button:hover {
+  background: #aab9d9;
+}
+
+.status {
+  margin-left: auto;
+  color: #9ece6a;
+  font-size: 0.95rem;
+}
+
+.map-wrap {
+  position: relative;
+  overflow: hidden;
+}
+
+.map {
+  width: 100%;
+  height: 100%;
+  background: #fff;
+}
+
+.panel {
+  position: absolute;
+  width: 420px;
+  max-height: calc(100% - 80px);
+  border: 1px solid #414868;
+  border-radius: 12px;
+  background: #24283b;
+  overflow: hidden;
+  z-index: 1000;
+}
+
+.panel.left {
+  width: 560px;
+}
+
+.panel.right {
+  width: 380px;
+}
+
+.panel-title {
+  height: 38px;
+  background: #2b3047;
+  color: #c0caf5;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px;
+  cursor: grab;
+  user-select: none;
+}
+
+.grip {
+  color: #9aa5ce;
+}
+
+.panel-body {
+  background: #1f2335;
+  max-height: calc(100% - 38px);
+  overflow: auto;
+  padding: 10px;
+}
+
+.tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.tab {
+  background: #2b3047 !important;
+  color: #c0caf5 !important;
+}
+
+.tab.active {
+  background: #5a7cc9 !important;
+  color: #fff !important;
+}
+
+.lib-layout {
+  display: grid;
+  grid-template-columns: 210px 1fr;
+  gap: 8px;
+}
+
+.lib-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 520px;
+  overflow: auto;
+}
+
+.lib-list button {
+  width: 100%;
+  text-align: left;
+  margin-bottom: 4px;
+}
+
+.lib-list button.active {
+  background: #8fa4c8;
+}
+
+.lib-editor {
+  display: grid;
+  gap: 6px;
+}
+
+.lib-editor label,
+.inspector label {
+  display: grid;
+  grid-template-columns: 150px 1fr;
+  align-items: center;
+  gap: 8px;
+  color: #9aa5ce;
+  font-size: 0.9rem;
+}
+
+.lib-editor input,
+.inspector input,
+.inspector select {
+  border: 1px solid #414868;
+  border-radius: 8px;
+  background: #16161e;
+  color: #c0caf5;
+  padding: 8px;
+}
+
+.inspector {
+  display: grid;
+  gap: 8px;
+}
+
+.check {
+  grid-template-columns: auto 1fr !important;
+}
+
+.danger {
+  background: #f7c7d4 !important;
+  color: #6b1026 !important;
+}
+
+.muted {
+  color: #9aa5ce;
+}
+
+.mk {
+  width: 18px;
+  height: 18px;
+  border: 2px solid #fff;
+  box-sizing: border-box;
+}
+
+.mk-ilp {
+  clip-path: polygon(50% 0, 62% 36%, 100% 36%, 69% 58%, 79% 100%, 50% 74%, 21% 100%, 31% 58%, 0 36%, 38% 36%);
+  background: #0d9488;
+}
+
+.mk-mlp {
+  clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
+  background: #b45309;
+}
+
+.mk-gbewr {
+  clip-path: polygon(50% 0, 100% 38%, 82% 100%, 18% 100%, 0 38%);
+  background: #1e3a5f;
+}
+
+.dist-pin {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: #2563eb;
+  color: #fff;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+  border: 2px solid #0f172a;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: grid;
+  place-items: center;
+  z-index: 3000;
+}
+
+.modal {
+  background: #24283b;
+  border: 1px solid #414868;
+  border-radius: 14px;
+  padding: 20px;
+  width: 460px;
+  max-width: 92vw;
+}
+
+.distance {
+  font-size: 2rem;
+  color: #7aa2f7;
+  margin: 8px 0 14px;
+}
