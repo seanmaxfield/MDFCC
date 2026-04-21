@@ -999,7 +999,7 @@ def load_s_mdata(rd_filename=rd_fname) : # all misssiles, string data
         else :
             print(">>> NOTE: Rocket data file " + rd_filename + " not found, default data loaded.")
 
-    mdata_list.sort(key= lambda x: x['m_key'], reverse=True)
+    mdata_list.sort(key=lambda x: int(x['m_key']), reverse=True)
     for m_data in mdata_list :
         """ translate does not work properly when one-line if expression is inside for loop
         print(type(m_data['m_st']), m_data['m_st']) # debug
@@ -1028,7 +1028,7 @@ def load_s_idata(rd_filename=rd_fname) : # all interceptors, string data
         else :
             print(">>> NOTE: Rocket data file " + rd_filename + " not found, default data loaded.")
 
-    idata_list.sort(key= lambda x: x['i_key'], reverse=True)
+    idata_list.sort(key=lambda x: int(x['i_key']), reverse=True)
     for i_data in idata_list :
         #i_data = {key:val if key == 'i_key' else str(val).translate({ord(x): None for x in ']['}) for key, val in i_data.items()}
         for key, val in i_data.items() :
@@ -1057,8 +1057,8 @@ def load_s_data(rd_filename=rd_fname) : # load all missiles and interceptors, st
         else :
             print(">>> NOTE: Rocket data file " + rd_filename + " not found, default data loaded.")
 
-    mdata_list.sort(key= lambda x: x['m_key'], reverse=True)
-    idata_list.sort(key= lambda x: x['i_key'], reverse=True)
+    mdata_list.sort(key=lambda x: int(x['m_key']), reverse=True)
+    idata_list.sort(key=lambda x: int(x['i_key']), reverse=True)
 
     for m_data in mdata_list :
         for key, val in m_data.items() :

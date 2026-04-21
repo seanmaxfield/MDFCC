@@ -52,6 +52,9 @@ if macos :
     right_click = '<Button-2><ButtonRelease-2>'
 else :
     right_click = '<Button-3><ButtonRelease-3>'
+
+ch_mis_win = None
+ch_int_win = None
     
 
 if not os.path.exists(chart_path) :
@@ -587,10 +590,10 @@ def call_longrun(longrun) :
     if busy_running.get() :
         pop_message("Process running", "A process is running. Please wait until it completes...")
     else :
-        btn_ch_mis.config(state='disabled')
-        btn_ed_mis.config(state='disabled')
-        btn_ch_int.config(state='disabled')
-        btn_ed_int.config(state='disabled')
+        for btn_name in ("btn_ch_mis", "btn_ed_mis", "btn_ch_int", "btn_ed_int"):
+            btn = globals().get(btn_name)
+            if btn is not None:
+                btn.config(state='disabled')
         
         busy_running.set(True)
         try :
@@ -599,10 +602,10 @@ def call_longrun(longrun) :
             trace_txt = traceback.format_exc()
             print(trace_txt, file=sys.stderr)
         busy_running.set(False)
-        btn_ch_mis.config(state='normal')
-        btn_ed_mis.config(state='normal')
-        btn_ch_int.config(state='normal')
-        btn_ed_int.config(state='normal')
+        for btn_name in ("btn_ch_mis", "btn_ed_mis", "btn_ch_int", "btn_ed_int"):
+            btn = globals().get(btn_name)
+            if btn is not None:
+                btn.config(state='normal')
         if sound_task_complete_var.get() :
             if os.path.exists('sounds/Purr.mp3') :
                 playsound('sounds/Purr.mp3')
@@ -715,164 +718,128 @@ def bind_mousewheel(widget):
         
 def choose_missile() :
     global ch_mis_win
-    try :
-        if ch_mis_win.state() == "normal": ch_mis_win.focus()
-    except :
-        ch_mis_win = Toplevel(root)
-        ch_mis_win.title('Choose Missile')
-        ch_mis_win.geometry('470x500+200+100')
-        ch_mis_win.config(border=3, relief='ridge')
+    if ch_mis_win is not None and ch_mis_win.winfo_exists() and ch_mis_win.state() == "normal":
+        ch_mis_win.focus()
+        return
+    ch_mis_win = Toplevel(root)
+    ch_mis_win.title('Choose Missile')
+    ch_mis_win.geometry('470x500+200+100')
+    ch_mis_win.config(border=3, relief='ridge')
 
-        
-        def set_missile_type(m_key) :
-            #missile_data = rd.missile(m_key, rd_fname)
-            #missile_type = missile_data["type"]
-            for m_data in missile_data_list :
-                if m_data['m_key'] == m_key :
-                    missile_data = m_data
-                    break
-
-            mname_var.set(missile_data["type"])
-            mname1_var.set(mname_var.get().split('#', 1)[0])
-            #lbl_mis.config(text=missile_label)
-            mtype_var.set(m_key)
-            #lbl_mkey.config(text=str(m_key))
-            ch_mis_win.destroy()
-
-        def close(event=None) :
-            root.focus_set()
-            ch_mis_win.destroy()
-        
-
-        vscrollbar = AutoScrollbar(ch_mis_win)
-        vscrollbar.grid(row=0, column=1, sticky='ns')
-        #hscrollbar = AutoScrollbar(ch_mis_win, orient=HORIZONTAL)
-        #hscrollbar.grid(row=1, column=0, sticky='ew')
-        
-        canvas = Canvas(ch_mis_win, yscrollcommand=vscrollbar.set) #, xscrollcommand=hscrollbar.set)
-        canvas.grid(row=0, column=0, sticky='news')
-        
-        vscrollbar.config(command=canvas.yview)
-        #hscrollbar.config(command=canvas.xview)
-        
-        # make the canvas expandable
-        ch_mis_win.grid_rowconfigure(0, weight=1)
-        ch_mis_win.grid_columnconfigure(0, weight=1)
-        
-        # create canvas contents
-        ch_mis_frame = Frame(canvas)
-        ch_mis_frame.rowconfigure(1, weight=1)
-        ch_mis_frame.columnconfigure(1, weight=1)
-        
-        missile_data_list = rd.load_s_mdata(rd_fname)
-        i_rd = 0
+    def set_missile_type(m_key) :
         for m_data in missile_data_list :
-            btn_text = m_data["type"]
-            mis_key = m_data["m_key"]
-            btn_mis = Button(ch_mis_frame, text=btn_text, anchor='w', pady=0, command=lambda key=mis_key: set_missile_type(key))
-            #btn_mis.pack(fill='x', expand=1)
-            btn_mis.grid(row=i_rd, column=0, sticky='ew')
-            i_rd += 1
-        
-        canvas.create_window(0, 0, anchor=NW, window=ch_mis_frame)
-        ch_mis_frame.update_idletasks()
-        canvas.config(scrollregion=canvas.bbox("all"))
-        canvas.bind("<1>",     lambda event: canvas.focus_set())
-        canvas.bind("<Left>",  lambda event: canvas.xview_scroll(-1, "units"))
-        canvas.bind("<Right>", lambda event: canvas.xview_scroll( 1, "units"))
-        canvas.bind("<Up>",    lambda event: canvas.yview_scroll(-1, "units"))
-        canvas.bind("<Down>",  lambda event: canvas.yview_scroll( 1, "units"))
-        canvas.bind("<Prior>", lambda event: canvas.yview_scroll(-1, "pages"))
-        canvas.bind("<Next>",  lambda event: canvas.yview_scroll( 1, "pages"))
-        canvas.bind("<Home>",  lambda event: canvas.yview_moveto('0.0'))
-        canvas.bind("<End>",   lambda event: canvas.yview_moveto('1.0'))
+            if m_data['m_key'] == m_key :
+                missile_data = m_data
+                break
+        mname_var.set(missile_data["type"])
+        mname1_var.set(mname_var.get().split('#', 1)[0])
+        mtype_var.set(m_key)
+        ch_mis_win.destroy()
 
-        bind_mousewheel(canvas)
+    def close(event=None) :
+        root.focus_set()
+        ch_mis_win.destroy()
 
-        canvas.focus_set()
+    vscrollbar = AutoScrollbar(ch_mis_win)
+    vscrollbar.grid(row=0, column=1, sticky='ns')
+    canvas = Canvas(ch_mis_win, yscrollcommand=vscrollbar.set)
+    canvas.grid(row=0, column=0, sticky='news')
+    vscrollbar.config(command=canvas.yview)
+    ch_mis_win.grid_rowconfigure(0, weight=1)
+    ch_mis_win.grid_columnconfigure(0, weight=1)
 
-        #ch_mis_win.focus_force()
-        ch_mis_win.bind('<Escape>', lambda esc: ch_mis_win.destroy())
-        ch_mis_win.bind("<FocusOut>", close)
+    ch_mis_frame = Frame(canvas)
+    ch_mis_frame.rowconfigure(1, weight=1)
+    ch_mis_frame.columnconfigure(1, weight=1)
+
+    missile_data_list = rd.load_s_mdata(rd_fname)
+    i_rd = 0
+    for m_data in missile_data_list :
+        btn_text = m_data["type"]
+        mis_key = m_data["m_key"]
+        btn_mis = Button(ch_mis_frame, text=btn_text, anchor='w', pady=0, command=lambda key=mis_key: set_missile_type(key))
+        btn_mis.grid(row=i_rd, column=0, sticky='ew')
+        i_rd += 1
+
+    canvas.create_window(0, 0, anchor=NW, window=ch_mis_frame)
+    ch_mis_frame.update_idletasks()
+    canvas.config(scrollregion=canvas.bbox("all"))
+    canvas.bind("<1>",     lambda event: canvas.focus_set())
+    canvas.bind("<Left>",  lambda event: canvas.xview_scroll(-1, "units"))
+    canvas.bind("<Right>", lambda event: canvas.xview_scroll( 1, "units"))
+    canvas.bind("<Up>",    lambda event: canvas.yview_scroll(-1, "units"))
+    canvas.bind("<Down>",  lambda event: canvas.yview_scroll( 1, "units"))
+    canvas.bind("<Prior>", lambda event: canvas.yview_scroll(-1, "pages"))
+    canvas.bind("<Next>",  lambda event: canvas.yview_scroll( 1, "pages"))
+    canvas.bind("<Home>",  lambda event: canvas.yview_moveto('0.0'))
+    canvas.bind("<End>",   lambda event: canvas.yview_moveto('1.0'))
+    bind_mousewheel(canvas)
+    canvas.focus_set()
+    ch_mis_win.bind('<Escape>', lambda esc: ch_mis_win.destroy())
+    ch_mis_win.bind("<FocusOut>", close)
 
 
 def choose_interceptor() :
     global ch_int_win
-    try :
-        if ch_int_win.state() == "normal": ch_int_win.focus()
-    except :
-        ch_int_win = Toplevel(root)
-        ch_int_win.title('Choose Interceptor')
-        ch_int_win.geometry('360x500+600+100')
-        ch_int_win.config(border=3, relief='ridge')
-        
-        def set_interceptor_type(i_key) :
-            #interceptor_data = rd.interceptor(i_key, rd_fname)
-            #interceptor_type = interceptor_data["type"]
-            for i_data in interceptor_data_list :
-                if i_data['i_key'] == i_key :
-                    interceptor_data = i_data
-                    break
-            iname_var.set(interceptor_data["type"])
-            iname1_var.set(iname_var.get().split('#', 1)[0]) # name without comments
-            #lbl_int.config(text=interceptor_label)
-            itype_var.set(i_key)
-            ch_int_win.destroy()
-        
-        def close(event=None) :
-            root.focus_set()
-            ch_int_win.destroy()
+    if ch_int_win is not None and ch_int_win.winfo_exists() and ch_int_win.state() == "normal":
+        ch_int_win.focus()
+        return
+    ch_int_win = Toplevel(root)
+    ch_int_win.title('Choose Interceptor')
+    ch_int_win.geometry('360x500+600+100')
+    ch_int_win.config(border=3, relief='ridge')
 
-        vscrollbar = AutoScrollbar(ch_int_win)
-        vscrollbar.grid(row=0, column=1, sticky='ns')
-        #hscrollbar = AutoScrollbar(ch_int_win, orient=HORIZONTAL)
-        #hscrollbar.grid(row=1, column=0, sticky='ew')
-        
-        canvas = Canvas(ch_int_win, yscrollcommand=vscrollbar.set) #, xscrollcommand=hscrollbar.set)
-        canvas.grid(row=0, column=0, sticky='news')
-        
-        vscrollbar.config(command=canvas.yview)
-        #hscrollbar.config(command=canvas.xview)
-        
-        # make the canvas expandable
-        ch_int_win.grid_rowconfigure(0, weight=1)
-        ch_int_win.grid_columnconfigure(0, weight=1)
-        
-        # create canvas contents
-        ch_int_frame = Frame(canvas)
-        ch_int_frame.rowconfigure(1, weight=1)
-        ch_int_frame.columnconfigure(1, weight=1)
-        
-        interceptor_data_list = rd.load_s_idata(rd_fname)
-        i_rd = 0
+    def set_interceptor_type(i_key) :
         for i_data in interceptor_data_list :
-            btn_text = i_data["type"]
-            int_key = i_data["i_key"]
-            btn_int = Button(ch_int_frame, text=btn_text, anchor='w', pady=0, command=lambda key=int_key: set_interceptor_type(key))
-            #btn_int.pack(fill='x', expand=1)
-            btn_int.grid(row=i_rd, column=0, sticky='ew')
-            i_rd += 1
-            
-        canvas.create_window(0, 0, anchor=NW, window=ch_int_frame)
-        ch_int_frame.update_idletasks()
-        canvas.config(scrollregion=canvas.bbox("all"))
-        canvas.bind("<1>",     lambda event: canvas.focus_set())
-        canvas.bind("<Left>",  lambda event: canvas.xview_scroll(-1, "units"))
-        canvas.bind("<Right>", lambda event: canvas.xview_scroll( 1, "units"))
-        canvas.bind("<Up>",    lambda event: canvas.yview_scroll(-1, "units"))
-        canvas.bind("<Down>",  lambda event: canvas.yview_scroll( 1, "units"))
-        canvas.bind("<Prior>", lambda event: canvas.yview_scroll(-1, "pages"))
-        canvas.bind("<Next>",  lambda event: canvas.yview_scroll( 1, "pages"))
-        canvas.bind("<Home>",  lambda event: canvas.yview_moveto('0.0'))
-        canvas.bind("<End>",   lambda event: canvas.yview_moveto('1.0'))
+            if i_data['i_key'] == i_key :
+                interceptor_data = i_data
+                break
+        iname_var.set(interceptor_data["type"])
+        iname1_var.set(iname_var.get().split('#', 1)[0])
+        itype_var.set(i_key)
+        ch_int_win.destroy()
 
-        bind_mousewheel(canvas)
+    def close(event=None) :
+        root.focus_set()
+        ch_int_win.destroy()
 
-        canvas.focus_set()
+    vscrollbar = AutoScrollbar(ch_int_win)
+    vscrollbar.grid(row=0, column=1, sticky='ns')
+    canvas = Canvas(ch_int_win, yscrollcommand=vscrollbar.set)
+    canvas.grid(row=0, column=0, sticky='news')
+    vscrollbar.config(command=canvas.yview)
+    ch_int_win.grid_rowconfigure(0, weight=1)
+    ch_int_win.grid_columnconfigure(0, weight=1)
 
-        #ch_int_win.focus_force()
-        ch_int_win.bind('<Escape>', lambda esc: ch_int_win.destroy())
-        ch_int_win.bind("<FocusOut>", close)
+    ch_int_frame = Frame(canvas)
+    ch_int_frame.rowconfigure(1, weight=1)
+    ch_int_frame.columnconfigure(1, weight=1)
+
+    interceptor_data_list = rd.load_s_idata(rd_fname)
+    i_rd = 0
+    for i_data in interceptor_data_list :
+        btn_text = i_data["type"]
+        int_key = i_data["i_key"]
+        btn_int = Button(ch_int_frame, text=btn_text, anchor='w', pady=0, command=lambda key=int_key: set_interceptor_type(key))
+        btn_int.grid(row=i_rd, column=0, sticky='ew')
+        i_rd += 1
+
+    canvas.create_window(0, 0, anchor=NW, window=ch_int_frame)
+    ch_int_frame.update_idletasks()
+    canvas.config(scrollregion=canvas.bbox("all"))
+    canvas.bind("<1>",     lambda event: canvas.focus_set())
+    canvas.bind("<Left>",  lambda event: canvas.xview_scroll(-1, "units"))
+    canvas.bind("<Right>", lambda event: canvas.xview_scroll( 1, "units"))
+    canvas.bind("<Up>",    lambda event: canvas.yview_scroll(-1, "units"))
+    canvas.bind("<Down>",  lambda event: canvas.yview_scroll( 1, "units"))
+    canvas.bind("<Prior>", lambda event: canvas.yview_scroll(-1, "pages"))
+    canvas.bind("<Next>",  lambda event: canvas.yview_scroll( 1, "pages"))
+    canvas.bind("<Home>",  lambda event: canvas.yview_moveto('0.0'))
+    canvas.bind("<End>",   lambda event: canvas.yview_moveto('1.0'))
+    bind_mousewheel(canvas)
+    canvas.focus_set()
+    ch_int_win.bind('<Escape>', lambda esc: ch_int_win.destroy())
+    ch_int_win.bind("<FocusOut>", close)
 
         
 def gui_balmis_flight() :

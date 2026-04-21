@@ -927,6 +927,12 @@ def footprint_mode2(s_func, # s_func needs to be either short_search2 or sls_sea
     mrange = f_alfa * R_e
     fp_single = False   # assuming it is a two-part footprint unless proven otherwise
     dist_step = (shift_min - mrange) / num_dist # negative value
+
+    if callable(det_range):
+        _orig_s_func = s_func
+        def s_func(trj, itable, h_min, maxia, t_lnc, omega, shift, op_range, _d, t_delay, h_discr):
+            d = det_range(omega, shift)
+            return _orig_s_func(trj, itable, h_min, maxia, t_lnc, omega, shift, op_range, d, t_delay, h_discr)
     
     ilp_ok = s_func(t_trj, t_itable, h_min, maxia, t_lnc, 0, mrange, op_range, det_range, t_delay, h_discr) # shift == mrange means ILP is the impact point
     if not ilp_ok : # ILP not defendable, find a defendable position behind it

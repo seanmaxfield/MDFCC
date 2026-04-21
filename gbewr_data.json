@@ -1,0 +1,28 @@
+{
+    "gbewr_radars": [
+        {
+            "r_key": 1,
+            "type": "AN/TPY-2 (FBX-T) Forward-Based X-Band",
+            "range_km": 1500,
+            "note": "Forward-based mode ~1500 km, terminal mode ~600 km"
+        },
+        {
+            "r_key": 2,
+            "type": "UEWR Upgraded Early Warning Radar",
+            "range_km": 4000,
+            "note": "UHF band, long-range early warning"
+        },
+        {
+            "r_key": 3,
+            "type": "AN/TPY-2 Terminal Mode",
+            "range_km": 600,
+            "note": "Close-range THAAD guidance"
+        },
+        {
+            "r_key": 4,
+            "type": "SPY-1 (Aegis)",
+            "range_km": 900,
+            "note": "Ship-based S-band"
+        }
+    ]
+}
