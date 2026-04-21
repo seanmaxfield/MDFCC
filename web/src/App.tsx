@@ -255,7 +255,8 @@ export default function App() {
   const pendingRef = useRef(new Map<string, (v: unknown) => void>());
 
   useEffect(() => {
-    const w = new Worker(new URL("./compute.worker.ts", import.meta.url), { type: "module" });
+    // Classic worker: required because compute.worker uses importScripts() for Pyodide loader
+    const w = new Worker(new URL("./compute.worker.ts", import.meta.url));
     workerRef.current = w;
     w.onmessage = (ev: MessageEvent<any>) => {
       const msg = ev.data;
