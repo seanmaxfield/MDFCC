@@ -175,6 +175,19 @@ body,
   gap: 8px;
 }
 
+.inspector-sub {
+  margin: 10px 0 2px;
+  font-size: 0.95rem;
+  color: #9aa5ce;
+  font-weight: 600;
+}
+
+.proc-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+
 .check {
   grid-template-columns: auto 1fr !important;
 }
@@ -220,6 +233,23 @@ body,
   display: grid;
   place-items: center;
   border: 2px solid #0f172a;
+}
+
+.cov-pin {
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  color: #fff;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+  border: 2px solid #0f172a;
+}
+.cov-pin.ok {
+  background: #16a34a;
+}
+.cov-pin.bad {
+  background: #dc2626;
 }
 
 .modal-backdrop {

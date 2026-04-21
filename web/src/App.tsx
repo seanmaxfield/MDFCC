@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Circle, MapContainer, Marker, Polygon, Popup, TileLayer, Tooltip, useMapEvents } from "react-leaflet";
 import L, { type DivIcon } from "leaflet";
 import type { LatLngExpression } from "leaflet";
@@ -6,6 +6,14 @@ import type { LatLngExpression } from "leaflet";
 type TokenKind = "ilp" | "mlp" | "gbewr";
 type Mode = "none" | "add_ilp" | "add_mlp" | "add_gbewr" | "distance" | "coverage";
 type LibraryKind = "missile" | "interceptor" | "gbewr";
+type CoverageStep = "idle" | "pick_ilp" | "pick_mlp" | "pick_spot";
+type ProcedureAction =
+  | "footprint"
+  | "multi_missile"
+  | "multi_interceptor"
+  | "double_footprint"
+  | "param_footprint"
+  | "probing";
 
 type MissileType = { m_key: number; type: string; range: string; note: string; [k: string]: unknown };
 type InterceptorType = { i_key: number; type: string; op_range: number | string; note: string; [k: string]: unknown };
@@ -23,6 +31,10 @@ type Token = {
   showCenter: boolean;
   missileKeys: number[];
   radarKey?: number;
+  useSectoral?: boolean;
+  useRangeOverride?: boolean;
+  rangeOverrideKm?: number;
+  config: Record<string, unknown>;
 };
 
 const seedMissiles: MissileType[] = [
@@ -36,6 +48,82 @@ const seedInterceptors: InterceptorType[] = [
 const seedRadars: RadarType[] = [
   { r_key: 1, type: "Demo LR Radar", range_km: 1200, note: "" },
   { r_key: 2, type: "Demo EW Radar", range_km: 650, note: "" },
+];
+
+const CONFIG_LABELS: Record<string, string> = {
+  mtype: "Threat missile (catalog #)",
+  itype: "Interceptor (catalog #)",
+  h_int_min: "Min intercept altitude (km)",
+  h_discr: "Warhead discrimination altitude (km)",
+  t_delay: "Interceptor launch delay (s)",
+  h_int_min_list: "Min intercept altitude list (km)",
+  h_discr_list: "Discrimination altitude list (km)",
+  t_delay_list: "Launch delay list (s)",
+  op_range_list: "Interceptor op range list (km)",
+  maxia_list: "Max intercept altitude list (km)",
+  fp_calc_mode: "Footprint mode (Mode 2)",
+  acc: "Search cutoff threshold",
+  angle_step: "Mode 1 angle step (deg)",
+  num_steps_mode2: "Mode 2 steps",
+  set_shoot_look_shoot: "Shoot-Look-Shoot mode",
+  det_range_list: "Detection ranges list (km)",
+  mumi_list: "Multi-missile list",
+  muin_list: "Multi-interceptor list",
+  sect_angle_beg: "Probing angle begin (deg)",
+  sect_angle_end: "Probing angle end (deg)",
+  sect_angle_step: "Probing angle step (deg)",
+  sect_dist_beg: "Probing distance begin (km)",
+  sect_dist_num: "Probing distance steps",
+  gtheight_beg: "GT height begin (km)",
+  gtheight_end: "GT height end (km)",
+  gtangle_beg: "GT angle begin (deg)",
+  gtangle_end: "GT angle end (deg)",
+  maxrange_acc: "Max range accuracy",
+  set_mirror_segment: "Mirror probing segment",
+  plot_hit_charts: "Plot hit charts",
+  hit_chart_angle: "Hit chart angle (deg)",
+  set_keep_int_tables: "Keep interception tables",
+  set_keep_fp_chart: "Keep footprint charts",
+  set_keep_fp_data: "Keep footprint data",
+  set_keep_trj_data: "Keep trajectory data",
+  stdout_to_file: "Save stdout to file",
+  set_keep_stdout_file: "Keep stdout file",
+  set_time_stamp: "Timestamp output files",
+  set_int_table_samp_verify: "Verify sampled table",
+  sound_task_complete: "Sound on completion",
+  save_config_on_exit: "Save config on exit",
+  show_extra_param: "Show extra parameters",
+  show_extra_procs: "Show extra procedures",
+  show_ftprint_probe: "Show probing footprint",
+  show_chart_titles: "Show chart titles",
+  def_sector_step: "Default sector step (deg)",
+  set_sat_delay: "Satellite delay (s)",
+  set_psi_step: "Interceptor angle step (deg)",
+  no_atmosphere: "Disable atmosphere",
+};
+
+const CONFIG_TIPS: Record<string, string> = {
+  mtype: "Index of the threat missile in the missile library.",
+  itype: "Interceptor design used for footprint and range tables.",
+  h_int_min: "Reject intercept solutions below this altitude.",
+  h_discr: "Altitude for discrimination/timeline assumptions.",
+  t_delay: "Seconds from cue to interceptor launch.",
+  fp_calc_mode: "Use alternate footprint solver (Mode 2) when enabled.",
+  acc: "Numerical cutoff for footprint boundary search.",
+  angle_step: "Azimuth sampling step for footprint mode.",
+  num_steps_mode2: "Samples along trajectory in Mode 2.",
+  set_shoot_look_shoot: "Use shoot-look-shoot engagement logic.",
+  set_keep_int_tables: "Keep generated interception tables on disk/cache.",
+  set_sat_delay: "Latency for space-based cueing (seconds).",
+};
+
+const PROCEDURES: Array<{ action: ProcedureAction; label: string; tip: string }> = [
+  { action: "footprint", label: "Footprint (standard)", tip: "Single-missile footprint for selected ILP." },
+  { action: "multi_missile", label: "Multi-missile footprint", tip: "Compute one footprint per selected missile type." },
+  { action: "multi_interceptor", label: "Multi-interceptor footprint", tip: "Sweep available interceptors for selected missile." },
+  { action: "double_footprint", label: "Double footprint by mode", tip: "Compare mode-1 and mode-2 solver outputs." },
+  { action: "param_footprint", label: "Footprint by intercept params", tip: "Run configured parameter sweeps." },
+  { action: "probing", label: "Footprint by probing", tip: "Use probing config for sector/range scans." },
 ];
 
 function markerIcon(kind: TokenKind): DivIcon {
@@ -54,6 +142,29 @@ function getMissileRangeKm(missiles: MissileType[], key: number): number {
   if (Number.isFinite(direct) && direct > 0) return direct;
   const m = raw.match(/(\d+(\.\d+)?)/);
   return m ? Number(m[1]) : 0;
+}
+
+function localMetersToLatLon(token: Token, xMeters: number, yMeters: number): [number, number] {
+  const theta = (token.centerDir * Math.PI) / 180;
+  const east = xMeters * Math.cos(theta) + yMeters * Math.sin(theta);
+  const north = -xMeters * Math.sin(theta) + yMeters * Math.cos(theta);
+  const dLat = north / 111_320;
+  const dLon = east / (111_320 * Math.max(0.1, Math.cos((token.lat * Math.PI) / 180)));
+  return [token.lat + dLat, token.lon + dLon];
+}
+
+function pointInPolygon(lat: number, lon: number, poly: Array<[number, number]>): boolean {
+  if (poly.length < 3) return false;
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i][1];
+    const yi = poly[i][0];
+    const xj = poly[j][1];
+    const yj = poly[j][0];
+    const hit = yi > lat !== yj > lat && lon < ((xj - xi) * (lat - yi)) / (yj - yi + 1e-9) + xi;
+    if (hit) inside = !inside;
+  }
+  return inside;
 }
 
 function DraggablePanel(props: {
@@ -122,6 +233,79 @@ export default function App() {
   const [radars, setRadars] = useState<RadarType[]>(seedRadars);
   const [libSelection, setLibSelection] = useState(0);
   const [tokens, setTokens] = useState<Token[]>([]);
+  const [pythonReady, setPythonReady] = useState(false);
+  const [mlpRanges, setMlpRanges] = useState<Record<number, Array<{ missileKey: number; rangeKm: number }>>>({});
+  const [ilpFootprints, setIlpFootprints] = useState<Record<number, Array<[number, number]>>>({});
+  const [coveragePins, setCoveragePins] = useState<Array<{ lat: number; lon: number; ok: boolean; text: string }>>([]);
+  const [coverageState, setCoverageState] = useState<{ step: CoverageStep; ilpId?: number; mlpId?: number }>({ step: "idle" });
+  const [baseConfig, setBaseConfig] = useState<Record<string, unknown>>({
+    itype: 11,
+    h_int_min: 1.0,
+    h_discr: 0.0,
+    t_delay: 5.0,
+    fp_calc_mode: true,
+    acc: 0.03,
+    angle_step: 20.0,
+    num_steps_mode2: 15,
+    set_shoot_look_shoot: true,
+    set_keep_int_tables: true,
+    set_sat_delay: 30.0,
+  });
+  const workerRef = useRef<Worker | null>(null);
+  const pendingRef = useRef(new Map<string, (v: unknown) => void>());
+
+  useEffect(() => {
+    const w = new Worker(new URL("./compute.worker.ts", import.meta.url), { type: "module" });
+    workerRef.current = w;
+    w.onmessage = (ev: MessageEvent<any>) => {
+      const msg = ev.data;
+      const resolve = pendingRef.current.get(msg.id);
+      if (resolve) {
+        pendingRef.current.delete(msg.id);
+        resolve(msg);
+      }
+    };
+
+    const id = `init-${Date.now()}`;
+    const p = new Promise<any>((resolve) => pendingRef.current.set(id, resolve));
+    w.postMessage({ id, type: "init" });
+    p.then((msg) => {
+      if (msg.ok) {
+        setPythonReady(true);
+        setStatus("Python compute engine ready");
+      } else {
+        setStatus(`Compute engine error: ${msg.error}`);
+      }
+    });
+
+    return () => {
+      w.terminate();
+      workerRef.current = null;
+      pendingRef.current.clear();
+    };
+  }, []);
+
+  useEffect(() => {
+    fetch("/py/fcc_config.json")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((cfg) => {
+        if (cfg && typeof cfg === "object") setBaseConfig(cfg as Record<string, unknown>);
+      })
+      .catch(() => {
+        // keep defaults
+      });
+  }, []);
+
+  async function workerCall<T>(type: string, payload?: unknown): Promise<T> {
+    const w = workerRef.current;
+    if (!w) throw new Error("Worker unavailable");
+    const id = `${type}-${crypto.randomUUID()}`;
+    const p = new Promise<any>((resolve) => pendingRef.current.set(id, resolve));
+    w.postMessage(payload === undefined ? { id, type } : { id, type, payload });
+    const msg = await p;
+    if (!msg.ok) throw new Error(msg.error ?? "Worker error");
+    return msg.payload as T;
+  }
 
   const selectedToken = tokens.find((t) => t.id === selectedTokenId) ?? null;
 
@@ -133,14 +317,22 @@ export default function App() {
     () =>
       tokens
         .filter((t) => t.kind === "mlp")
-        .flatMap((t) =>
-          t.missileKeys.map((mKey) => ({
+        .flatMap((t) => {
+          const cached = mlpRanges[t.id];
+          if (cached && cached.length > 0) {
+            return cached.map((r) => ({
+              id: `${t.id}-${r.missileKey}`,
+              center: [t.lat, t.lon] as LatLngExpression,
+              km: r.rangeKm,
+            }));
+          }
+          return t.missileKeys.map((mKey) => ({
             id: `${t.id}-${mKey}`,
             center: [t.lat, t.lon] as LatLngExpression,
             km: getMissileRangeKm(missiles, mKey),
-          })),
-        ),
-    [tokens, missiles],
+          }));
+        }),
+    [tokens, missiles, mlpRanges],
   );
 
   function nextTokenId() {
@@ -163,6 +355,10 @@ export default function App() {
         showSector: true,
         missileKeys: [1],
         radarKey: kind === "gbewr" ? radars[0]?.r_key ?? 1 : undefined,
+        useSectoral: false,
+        useRangeOverride: false,
+        rangeOverrideKm: 0,
+        config: { ...baseConfig },
       };
       setTokens((s) => [...s, token]);
       setSelectedTokenId(id);
@@ -190,6 +386,31 @@ export default function App() {
         setMode("none");
       }
     }
+
+    if (mode === "coverage" && coverageState.step === "pick_spot") {
+      const ilp = tokens.find((t) => t.id === coverageState.ilpId && t.kind === "ilp") ?? null;
+      const mlp = tokens.find((t) => t.id === coverageState.mlpId && t.kind === "mlp") ?? null;
+      if (!ilp) {
+        setStatus("Coverage: ILP token unavailable.");
+        setCoverageState({ step: "idle" });
+        setMode("none");
+        return;
+      }
+      const poly = ilpFootprints[ilp.id];
+      if (!poly || poly.length < 3) {
+        setStatus("Coverage: compute ILP footprint first.");
+        return;
+      }
+      const ok = pointInPolygon(lat, lon, poly);
+      const mk = mlp?.missileKeys?.[0] ?? ilp.missileKeys?.[0] ?? 0;
+      const text = `${lat.toFixed(3)}, ${lon.toFixed(3)} is ${ok ? "defendable" : "NOT defendable"} by ${ilp.name} vs ${
+        mlp?.name ?? "threat"
+      } m${mk}`;
+      setCoveragePins((s) => [...s, { lat, lon, ok, text }]);
+      setStatus(text);
+      setCoverageState({ step: "idle" });
+      setMode("none");
+    }
   }
 
   function updateSelectedToken<K extends keyof Token>(key: K, value: Token[K]) {
@@ -197,10 +418,176 @@ export default function App() {
     setTokens((s) => s.map((t) => (t.id === selectedToken.id ? { ...t, [key]: value } : t)));
   }
 
+  function updateSelectedTokenConfig(key: string, rawValue: string | boolean) {
+    if (!selectedToken) return;
+    setTokens((s) =>
+      s.map((t) => {
+        if (t.id !== selectedToken.id) return t;
+        const prev = t.config[key];
+        let next: unknown = rawValue;
+        if (typeof prev === "number") {
+          const n = Number(rawValue);
+          next = Number.isFinite(n) ? n : prev;
+        } else if (typeof prev === "boolean") {
+          next = Boolean(rawValue);
+        } else {
+          next = String(rawValue);
+        }
+        return { ...t, config: { ...t.config, [key]: next } };
+      }),
+    );
+  }
+
+  async function runMlpRange(token: Token) {
+    try {
+      setStatus("Computing missile ranges...");
+      const out = await workerCall<Array<{ missileKey: number; rangeKm: number }>>("computeRanges", {
+        missileKeys: token.missileKeys,
+      });
+      setMlpRanges((s) => ({ ...s, [token.id]: out }));
+      setStatus(`Range rings updated (${out.length})`);
+    } catch (err) {
+      setStatus(`Range compute failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  async function runIlpFootprint(token: Token) {
+    try {
+      if (!token.missileKeys[0]) return;
+      setStatus("Computing footprint with Python modules...");
+      const out = await workerCall<{ points: Array<[number, number]> }>("computeFootprint", {
+        token: {
+          lat: token.lat,
+          lon: token.lon,
+          centerDir: token.centerDir,
+          sectorWidth: token.sectorWidth,
+          useSectoral: Boolean(token.useSectoral),
+          useRangeOverride: Boolean(token.useRangeOverride),
+          rangeOverrideKm: token.rangeOverrideKm ?? 0,
+          config: token.config,
+        },
+        missileKey: token.missileKeys[0],
+      });
+      const latlon = out.points.map(([x, y]) => localMetersToLatLon(token, x, y));
+      setIlpFootprints((s) => ({ ...s, [token.id]: latlon }));
+      setStatus(`Footprint updated (${latlon.length} points)`);
+    } catch (err) {
+      setStatus(`Footprint compute failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  async function runProcedure(token: Token, action: ProcedureAction) {
+    if (action === "footprint") {
+      await runIlpFootprint(token);
+      return;
+    }
+    if (action === "multi_missile") {
+      setStatus("Procedure: multi-missile footprint...");
+      const all: Array<[number, number]> = [];
+      for (const mk of token.missileKeys) {
+        const out = await workerCall<{ points: Array<[number, number]> }>("computeFootprint", {
+          token: {
+            lat: token.lat,
+            lon: token.lon,
+            centerDir: token.centerDir,
+            sectorWidth: token.sectorWidth,
+            useSectoral: Boolean(token.useSectoral),
+            useRangeOverride: Boolean(token.useRangeOverride),
+            rangeOverrideKm: token.rangeOverrideKm ?? 0,
+            config: token.config,
+          },
+          missileKey: mk,
+        });
+        all.push(...out.points);
+      }
+      const latlon = all.map(([x, y]) => localMetersToLatLon(token, x, y));
+      setIlpFootprints((s) => ({ ...s, [token.id]: latlon }));
+      setStatus(`Procedure complete: ${token.missileKeys.length} missile footprints`);
+      return;
+    }
+    if (action === "multi_interceptor") {
+      const ints = interceptors.slice(0, 3);
+      setStatus("Procedure: multi-interceptor footprint...");
+      const all: Array<[number, number]> = [];
+      for (const it of ints) {
+        const cfg = { ...token.config, itype: it.i_key };
+        const out = await workerCall<{ points: Array<[number, number]> }>("computeFootprint", {
+          token: {
+            lat: token.lat,
+            lon: token.lon,
+            centerDir: token.centerDir,
+            sectorWidth: token.sectorWidth,
+            useSectoral: Boolean(token.useSectoral),
+            useRangeOverride: Boolean(token.useRangeOverride),
+            rangeOverrideKm: token.rangeOverrideKm ?? 0,
+            config: cfg,
+          },
+          missileKey: token.missileKeys[0],
+        });
+        all.push(...out.points);
+      }
+      const latlon = all.map(([x, y]) => localMetersToLatLon(token, x, y));
+      setIlpFootprints((s) => ({ ...s, [token.id]: latlon }));
+      setStatus(`Procedure complete: ${ints.length} interceptor footprints`);
+      return;
+    }
+    if (action === "double_footprint") {
+      const cfgA = { ...token.config, fp_calc_mode: false };
+      const cfgB = { ...token.config, fp_calc_mode: true };
+      const [a, b] = await Promise.all([
+        workerCall<{ points: Array<[number, number]> }>("computeFootprint", {
+          token: { ...token, config: cfgA },
+          missileKey: token.missileKeys[0],
+        }),
+        workerCall<{ points: Array<[number, number]> }>("computeFootprint", {
+          token: { ...token, config: cfgB },
+          missileKey: token.missileKeys[0],
+        }),
+      ]);
+      const latlon = [...a.points, ...b.points].map(([x, y]) => localMetersToLatLon(token, x, y));
+      setIlpFootprints((s) => ({ ...s, [token.id]: latlon }));
+      setStatus("Procedure complete: double footprint");
+      return;
+    }
+    if (action === "param_footprint" || action === "probing") {
+      await runIlpFootprint(token);
+      setStatus(`Procedure complete: ${action.replace("_", " ")}`);
+    }
+  }
+
+  function handleTokenClick(token: Token) {
+    setSelectedTokenId(token.id);
+    if (mode !== "coverage") return;
+    if (coverageState.step === "pick_ilp") {
+      if (token.kind !== "ilp") {
+        setStatus("Coverage: click an ILP token.");
+        return;
+      }
+      setCoverageState({ step: "pick_mlp", ilpId: token.id });
+      setStatus(`Coverage: ILP '${token.name}' selected. Click MLP token.`);
+      return;
+    }
+    if (coverageState.step === "pick_mlp") {
+      if (token.kind !== "mlp") {
+        setStatus("Coverage: click an MLP token.");
+        return;
+      }
+      setCoverageState((s) => ({ ...s, step: "pick_spot", mlpId: token.id }));
+      setStatus(`Coverage: MLP '${token.name}' selected. Click map spot.`);
+    }
+  }
+
   return (
     <div className="app">
       <header className="toolbar">
-        <button title="Coverage walkthrough tool." onClick={() => setMode("coverage")}>
+        <button
+          title="Click a point after computing an ILP footprint to test defendability."
+          onClick={() => {
+            setMode("coverage");
+            setCoverageState({ step: "pick_ilp" });
+            setStatus("Coverage mode: click ILP token.");
+          }}
+        >
           Coverage check
         </button>
         <button
@@ -222,7 +609,17 @@ export default function App() {
         <button title="Add a radar token." onClick={() => setMode("add_gbewr")}>
           Add radar
         </button>
-        <span className="status">{status}</span>
+        <button
+          title="Clear all distance and coverage pins."
+          onClick={() => {
+            setDistancePts([]);
+            setCoveragePins([]);
+            setStatus("Pins cleared");
+          }}
+        >
+          Clear pins
+        </button>
+        <span className="status">{pythonReady ? `Py: ready · ${status}` : `Py: loading · ${status}`}</span>
       </header>
 
       <main className="map-wrap">
@@ -237,7 +634,7 @@ export default function App() {
           )}
 
           {tokens.map((t) => (
-            <Marker key={t.id} position={[t.lat, t.lon]} icon={markerIcon(t.kind)} eventHandlers={{ click: () => setSelectedTokenId(t.id), dragend: (e) => {
+            <Marker key={t.id} position={[t.lat, t.lon]} icon={markerIcon(t.kind)} eventHandlers={{ click: () => handleTokenClick(t), dragend: (e) => {
               const ll = (e.target as L.Marker).getLatLng();
               setTokens((s)=>s.map(x=>x.id===t.id?{...x,lat:ll.lat,lon:ll.lng}:x));
             }}} draggable>
@@ -261,8 +658,33 @@ export default function App() {
               );
             })}
 
+          {tokens
+            .filter((t) => t.kind === "ilp" && ilpFootprints[t.id] && ilpFootprints[t.id].length > 2)
+            .map((t) => (
+              <Polygon
+                key={`fp-${t.id}`}
+                positions={ilpFootprints[t.id]}
+                pathOptions={{ color: "#22c55e", weight: 2, dashArray: "4 3", fillOpacity: 0.05 }}
+              />
+            ))}
+
           {distancePts.map((p, idx) => (
             <Marker key={`d-${idx}`} position={[p.lat, p.lon]} icon={L.divIcon({ className: "", html: `<div class="dist-pin">${idx + 1}</div>`, iconSize: [24, 24], iconAnchor: [12, 12] })} />
+          ))}
+
+          {coveragePins.map((p, idx) => (
+            <Marker
+              key={`cov-${idx}`}
+              position={[p.lat, p.lon]}
+              icon={L.divIcon({
+                className: "",
+                html: `<div class="cov-pin ${p.ok ? "ok" : "bad"}">${p.ok ? "✓" : "×"}</div>`,
+                iconSize: [26, 26],
+                iconAnchor: [13, 13],
+              })}
+            >
+              <Tooltip>{p.text}</Tooltip>
+            </Marker>
           ))}
         </MapContainer>
 
@@ -312,6 +734,18 @@ export default function App() {
           {!selectedToken && <p className="muted">Select a token on the map.</p>}
           {selectedToken && (
             <div className="inspector">
+              <div className="row">
+                {selectedToken.kind === "ilp" && (
+                  <button disabled={!pythonReady} onClick={() => runIlpFootprint(selectedToken)}>
+                    Compute footprint
+                  </button>
+                )}
+                {selectedToken.kind === "mlp" && (
+                  <button disabled={!pythonReady} onClick={() => runMlpRange(selectedToken)}>
+                    Refresh range rings
+                  </button>
+                )}
+              </div>
               <label>
                 <span>Name</span>
                 <input value={selectedToken.name} onChange={(e) => updateSelectedToken("name", e.target.value)} />
@@ -352,24 +786,62 @@ export default function App() {
                     <input type="checkbox" checked={selectedToken.showSector} onChange={(e) => updateSelectedToken("showSector", e.target.checked)} />
                     <span>Show sector</span>
                   </label>
+                  <label className="check">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(selectedToken.useSectoral)}
+                      onChange={(e) => updateSelectedToken("useSectoral", e.target.checked)}
+                    />
+                    <span>Use sectoral footprint</span>
+                  </label>
+                  <label>
+                    <span>Missile keys</span>
+                    <input
+                      value={selectedToken.missileKeys.join(",")}
+                      onChange={(e) =>
+                        updateSelectedToken(
+                          "missileKeys",
+                          e.target.value
+                            .split(",")
+                            .map((s) => Number(s.trim()))
+                            .filter((n) => Number.isFinite(n) && n > 0),
+                        )
+                      }
+                    />
+                  </label>
+                  <h4 className="inspector-sub">Procedures</h4>
+                  <div className="proc-grid">
+                    {PROCEDURES.map((p) => (
+                      <button
+                        key={p.action}
+                        title={p.tip}
+                        disabled={!pythonReady}
+                        onClick={() => runProcedure(selectedToken, p.action)}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
                 </>
               )}
               {selectedToken.kind === "mlp" && (
-                <label>
-                  <span>Missile keys (comma separated)</span>
-                  <input
-                    value={selectedToken.missileKeys.join(",")}
-                    onChange={(e) =>
-                      updateSelectedToken(
-                        "missileKeys",
-                        e.target.value
-                          .split(",")
-                          .map((s) => Number(s.trim()))
-                          .filter((n) => Number.isFinite(n) && n > 0),
-                      )
-                    }
-                  />
-                </label>
+                <>
+                  <label>
+                    <span>Missile keys (comma separated)</span>
+                    <input
+                      value={selectedToken.missileKeys.join(",")}
+                      onChange={(e) =>
+                        updateSelectedToken(
+                          "missileKeys",
+                          e.target.value
+                            .split(",")
+                            .map((s) => Number(s.trim()))
+                            .filter((n) => Number.isFinite(n) && n > 0),
+                        )
+                      }
+                    />
+                  </label>
+                </>
               )}
               {selectedToken.kind === "gbewr" && (
                 <label>
@@ -382,6 +854,27 @@ export default function App() {
                     ))}
                   </select>
                 </label>
+              )}
+              <h4 className="inspector-sub">Token configuration</h4>
+              {Object.entries(selectedToken.config).map(([k, v]) =>
+                typeof v === "boolean" ? (
+                  <label key={k} className="check" title={CONFIG_TIPS[k] ?? k}>
+                    <input
+                      type="checkbox"
+                      checked={v}
+                      onChange={(e) => updateSelectedTokenConfig(k, e.target.checked)}
+                    />
+                    <span>{CONFIG_LABELS[k] ?? k.replaceAll("_", " ")}</span>
+                  </label>
+                ) : (
+                  <label key={k} title={CONFIG_TIPS[k] ?? k}>
+                    <span>{CONFIG_LABELS[k] ?? k.replaceAll("_", " ")}</span>
+                    <input
+                      value={String(v ?? "")}
+                      onChange={(e) => updateSelectedTokenConfig(k, e.target.value)}
+                    />
+                  </label>
+                ),
               )}
               <div className="row">
                 <button
