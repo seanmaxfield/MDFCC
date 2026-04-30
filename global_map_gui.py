@@ -48,7 +48,7 @@ TILE_SIZE = 256
 ROCKET_DATA_PATH = os.path.join(BASE_DIR, "rocket_data.json")
 GBEWR_DATA_PATH = os.path.join(BASE_DIR, "gbewr_data.json")
 MIN_ZOOM = 1.0
-MAX_ZOOM = 64.0
+MAX_ZOOM = 128.0
 
 THEME = {
     "root_bg": "#1a1b26",
@@ -104,8 +104,10 @@ HELP = {
     "show_center": "Draw the green boresight line from the site.",
     "show_sector": "Draw the gray sector boundary lines.",
     "sectoral_fp": "When computing footprints, clip results to the sector instead of full 360°.",
-    "det_override": "Use a fixed detection range (km) instead of the default space-based cueing model.",
+    "det_override": "Use a fixed detection range (km) instead of the native interceptor detection range. Mutually exclusive with space-based override.",
+    "space_delay": "Override native detection with space-based cueing. Set delay in seconds (default 30). Mutually exclusive with fixed detection-range override.",
     "range_override": "Override the threat’s maximum range from rocket data for footprint math only.",
+    "op_range_override": "For footprint display only: replace the interceptor’s operational range from rocket_data (km). Use for terminal-phase or notional envelope studies; does not change the interceptor trajectory table.",
     "assign_gbewr": "Early-warning radars whose detection arcs feed this defense site in Mode 2 / combined solves.",
     "procedures": "Launch detailed analysis windows from fp_gui.py using this site’s configuration.",
     "footprint_cfg": "Advanced solver parameters mirrored from fcc_config.json for this token.",
@@ -224,6 +226,9 @@ use_sectoral
 
 det_range_override / range_override
   (ILP) Override detection or missile range from config.
+
+use_op_range_override / op_range_override_km
+  (ILP) Optional footprint-only replacement for interceptor operational range (km).
 """
 
 
@@ -274,9 +279,13 @@ class Token:
         self.use_sectoral = False
         self.use_det_range_override = False
         self.det_range_override_km = 0.0
+        self.use_space_based_delay = False
         self.use_range_override = False
         self.range_override_km = 0.0
+        self.use_op_range_override = False
+        self.op_range_override_km = 0.0
         self.config = json.loads(json.dumps(base_config))
+        self.space_based_delay_s = float(self.config.get("set_sat_delay", fcc_constants.sat_delay))
         self.missile_keys = [int(self.config.get("mtype", 1))]
         self.footprints = []
         self.missile_ranges = []
@@ -492,8 +501,11 @@ class MapApp:
         self._left_panning = False
         self._left_pan_last = None
         self.zoom = 1.0
+        self.zoom_var = tk.DoubleVar(value=self.zoom)
+        self._zoom_slider_updating = False
         self.view_center_lat = 0.0
         self.view_center_lon = 0.0
+        self._is_macos = str(self.root.tk.call("tk", "windowingsystem")) == "aqua"
         self.left_panel_visible = True
         self._left_panel_saved_geom = (12, 64)
         self._right_panel_user_pos = False
@@ -663,6 +675,34 @@ class MapApp:
 
         self.map_canvas = tk.Canvas(self.map_shell, bg="#ffffff", highlightthickness=0)
         self.map_canvas.grid(row=1, column=0, sticky="nsew")
+
+        self.zoom_slider_frame = tk.Frame(self.map_shell, bg=THEME["toolbar_bg"], highlightthickness=1, highlightbackground=THEME["border"])
+        self.zoom_slider_frame.place(x=12, rely=1.0, y=-18, anchor="sw")
+        tk.Label(
+            self.zoom_slider_frame,
+            text="Zoom",
+            bg=THEME["toolbar_bg"],
+            fg=THEME["fg"],
+            font=("TkDefaultFont", 9, "bold"),
+        ).pack(side="left", padx=(8, 6), pady=4)
+        self.zoom_slider = tk.Scale(
+            self.zoom_slider_frame,
+            from_=MIN_ZOOM,
+            to=MAX_ZOOM,
+            orient="horizontal",
+            variable=self.zoom_var,
+            command=self._on_zoom_slider_drag,
+            resolution=0.1,
+            showvalue=False,
+            length=170,
+            bg=THEME["toolbar_bg"],
+            fg=THEME["fg"],
+            troughcolor=THEME["panel_inner"],
+            activebackground=THEME["accent"],
+            highlightthickness=0,
+            borderwidth=0,
+        )
+        self.zoom_slider.pack(side="left", padx=(0, 8), pady=3)
 
         self.left_draggable = DraggablePanel(self.map_shell, "Type library", width=312, height=560)
         self.left_draggable.place(x=12, y=64)
@@ -1268,12 +1308,16 @@ class MapApp:
             show_sector_var = tk.BooleanVar(value=token.show_sector)
             use_sectoral_var = tk.BooleanVar(value=token.use_sectoral)
             use_det_override_var = tk.BooleanVar(value=token.use_det_range_override)
+            use_space_delay_var = tk.BooleanVar(value=token.use_space_based_delay)
             use_range_override_var = tk.BooleanVar(value=token.use_range_override)
+            use_op_range_override_var = tk.BooleanVar(value=token.use_op_range_override)
             self.sidebar_vars["show_center"] = show_center_var
             self.sidebar_vars["show_sector"] = show_sector_var
             self.sidebar_vars["use_sectoral"] = use_sectoral_var
             self.sidebar_vars["use_det_range_override"] = use_det_override_var
+            self.sidebar_vars["use_space_based_delay"] = use_space_delay_var
             self.sidebar_vars["use_range_override"] = use_range_override_var
+            self.sidebar_vars["use_op_range_override"] = use_op_range_override_var
             self._inspector_heading("Overlay & footprint options", None)
             self._insp_check(inner, "Show boresight line", show_center_var, HELP["show_center"], "show_center")
             self._insp_check(inner, "Show sector edges", show_sector_var, HELP["show_sector"], "show_sector")
@@ -1288,12 +1332,30 @@ class MapApp:
             self._add_entry("Detection range (km)", token.det_range_override_km, "det_range_override", HELP["det_override"])
             self._insp_check(
                 inner,
+                "Override with space-based detection",
+                use_space_delay_var,
+                HELP["space_delay"],
+                "use_space_based_delay",
+            )
+            self._add_entry("Space-based delay (s)", token.space_based_delay_s, "space_based_delay_s", HELP["space_delay"])
+            use_det_override_var.trace_add("write", lambda *_: self._on_det_mode_toggle("use_det_range_override"))
+            use_space_delay_var.trace_add("write", lambda *_: self._on_det_mode_toggle("use_space_based_delay"))
+            self._insp_check(
+                inner,
                 "Override threat max range",
                 use_range_override_var,
                 HELP["range_override"],
                 "use_range_override",
             )
             self._add_entry("Threat range override (km)", token.range_override_km, "range_override", HELP["range_override"])
+            self._insp_check(
+                inner,
+                "Override interceptor op range (footprint only)",
+                use_op_range_override_var,
+                HELP["op_range_override"],
+                "use_op_range_override",
+            )
+            self._add_entry("Interceptor op range (km)", token.op_range_override_km, "op_range_override_km", HELP["op_range_override"])
 
             self._inspector_sep()
             self._inspector_heading("Linked radars", "assign_gbewr")
@@ -1388,6 +1450,19 @@ class MapApp:
         ent = ttk.Entry(frame, textvariable=var, width=32)
         ent.pack(side="left", fill="x", expand=True)
         self.sidebar_vars[field_id] = var
+
+    def _on_det_mode_toggle(self, source_key):
+        """Keep detection mode toggles mutually exclusive."""
+        if self.selected_token is None or self.selected_token.kind != "ilp":
+            return
+        det_var = self.sidebar_vars.get("use_det_range_override")
+        space_var = self.sidebar_vars.get("use_space_based_delay")
+        if det_var is None or space_var is None:
+            return
+        if source_key == "use_det_range_override" and det_var.get() and space_var.get():
+            space_var.set(False)
+        elif source_key == "use_space_based_delay" and space_var.get() and det_var.get():
+            det_var.set(False)
 
     def _set_add_mode(self, mode):
         if self.add_mode == mode:
@@ -1578,14 +1653,44 @@ class MapApp:
             self._update_token_draw(token)
 
     def _on_mousewheel(self, event):
-        if event.num == 5 or event.delta < 0:
-            factor = 0.9
-        else:
-            factor = 1.1
+        # Normalize wheel direction across OSes; on macOS/aqua Tk delta sign is inverted
+        # relative to the Linux/Windows behavior this map was written for.
+        direction = 0
+        if hasattr(event, "num") and event.num in (4, 5):
+            direction = 1 if event.num == 4 else -1
+        elif hasattr(event, "delta") and event.delta:
+            direction = 1 if event.delta > 0 else -1
+            if self._is_macos:
+                direction *= -1
+
+        if direction == 0:
+            return
+
+        factor = 1.1 if direction > 0 else 0.9
 
         before_lat, before_lon = self._xy_to_latlon(event.x, event.y)
         self.zoom = clamp(self.zoom * factor, MIN_ZOOM, MAX_ZOOM)
+        self._sync_zoom_slider()
         self._recenter_on_cursor(before_lat, before_lon, event.x, event.y)
+        self._cancel_fast_map_render()
+        self._schedule_fast_map_render()
+
+    def _sync_zoom_slider(self):
+        self._zoom_slider_updating = True
+        self.zoom_var.set(self.zoom)
+        self._zoom_slider_updating = False
+
+    def _on_zoom_slider_drag(self, value):
+        if self._zoom_slider_updating:
+            return
+        try:
+            target_zoom = float(value)
+        except (TypeError, ValueError):
+            return
+        target_zoom = clamp(target_zoom, MIN_ZOOM, MAX_ZOOM)
+        if abs(target_zoom - self.zoom) < 1e-9:
+            return
+        self.zoom = target_zoom
         self._cancel_fast_map_render()
         self._schedule_fast_map_render()
 
@@ -1983,7 +2088,14 @@ class MapApp:
                     if token.use_sectoral:
                         footprint_xy = self._filter_sector_points(footprint_xy, token.sector_width)
                     if footprint_xy:
-                        base_label = "Space-based" if (gbewr_tokens and not token.use_det_range_override) else "Raw"
+                        if token.use_det_range_override:
+                            base_label = "Fixed det"
+                        elif token.use_space_based_delay:
+                            base_label = "Space-based"
+                        else:
+                            base_label = "Native det"
+                        if getattr(token, "use_op_range_override", False) and getattr(token, "op_range_override_km", 0) > 0:
+                            base_label += f" · op_cap={token.op_range_override_km:.0f}km*"
                         footprints.append({
                             "missile_key": m_key,
                             "label": base_label,
@@ -1999,6 +2111,8 @@ class MapApp:
                             footprint_xy = self._filter_sector_points(footprint_xy, token.sector_width)
                         if footprint_xy:
                             label = "GBEWR: " + (spec.get("type", f"r{gb_tok.r_key}")[:24])
+                            if token.use_op_range_override and token.op_range_override_km > 0:
+                                label += f" · op_cap={token.op_range_override_km:.0f}km*"
                             footprints.append({
                                 "missile_key": m_key,
                                 "label": label,
@@ -2027,6 +2141,15 @@ class MapApp:
 
     def _calculate_footprint_xy(self, token, m_type, gbewr_list=None):
         cfg = token.config
+        sat_delay_prev = fcc_constants.sat_delay
+        try:
+            delay_s = float(token.space_based_delay_s)
+        except (TypeError, ValueError):
+            delay_s = float(cfg.get("set_sat_delay", sat_delay_prev))
+        if token.use_space_based_delay:
+            fcc_constants.sat_delay = max(0.0, delay_s)
+        else:
+            fcc_constants.sat_delay = 0.0
         i_type = int(cfg.get("itype", 11))
         h_int_min = float(cfg.get("h_int_min", 0.0))
         h_discr = float(cfg.get("h_discr", 0.0))
@@ -2070,27 +2193,63 @@ class MapApp:
         op_range = interceptor_data.get("op_range", 0)
         if op_range and op_range < 2000:
             op_range *= 1000
+        if getattr(token, "use_op_range_override", False) and getattr(token, "op_range_override_km", 0) > 0:
+            op_range = float(token.op_range_override_km) * 1000.0
 
         det_range = 0.0
-        if token.use_det_range_override and token.det_range_override_km > 0:
+        if token.use_space_based_delay:
+            # Space-based override keeps det_range at 0 so sat-delay cueing is used.
+            det_range = 0.0
+        elif token.use_det_range_override and token.det_range_override_km > 0:
             det_range = token.det_range_override_km * 1000.0
         else:
-            # Map GUI uses space-based detection (sat_delay) by default
-            det_range = 0.0
+            native_det = interceptor_data.get("det_range", 0.0)
+            if isinstance(native_det, (list, tuple)):
+                if len(native_det) > m_type:
+                    det_range = float(native_det[m_type] or 0.0)
+            elif isinstance(native_det, dict):
+                key = str(m_type)
+                if key in native_det:
+                    det_range = float(native_det.get(key) or 0.0)
+            elif native_det:
+                det_range = float(native_det)
+            if det_range and det_range < 11000:
+                det_range *= 1000.0
 
-        if mode2 and gbewr_list and len(gbewr_list) > 0:
-            det_range = gbewr.make_det_range_func(
-                token.lat, token.lon, token.center_dir,
-                det_range, trj, gbewr_list,
-                base_uses_sat_delay=(det_range <= 0)
-            )
+        try:
+            if mode2 and gbewr_list and len(gbewr_list) > 0:
+                det_range = gbewr.make_det_range_func(
+                    token.lat, token.lon, token.center_dir,
+                    det_range, trj, gbewr_list,
+                    base_uses_sat_delay=token.use_space_based_delay
+                )
 
-        int_table = m.load_int_table(i_type, fcc_constants.psi_step, beta_step, ROCKET_DATA_PATH, "", cfg.get("set_keep_int_tables", True))
+            int_table = m.load_int_table(i_type, fcc_constants.psi_step, beta_step, ROCKET_DATA_PATH, "", cfg.get("set_keep_int_tables", True))
 
-        if not mode2:
-            search_func = ss.sls_search if emode_sls else ss.short_search
-            dist = mrange * dist_param
-            footprint_tab = fp.footprint_calc_v2(
+            if not mode2:
+                search_func = ss.sls_search if emode_sls else ss.short_search
+                dist = mrange * dist_param
+                footprint_tab = fp.footprint_calc_v2(
+                    search_func,
+                    trj,
+                    int_table,
+                    h_int_min,
+                    maxia,
+                    t_int_lnc,
+                    angle_step,
+                    op_range,
+                    det_range,
+                    t_delay,
+                    h_discr,
+                    acc,
+                    dist
+                )
+                if not np.any(footprint_tab):
+                    return []
+                return [(row[3], row[4]) for row in footprint_tab]
+
+            search_func = ss.sls_search2 if emode_sls else ss.short_search2
+            footprint_tab2 = ss.footprint_mode2(
                 search_func,
                 trj,
                 int_table,
@@ -2103,34 +2262,16 @@ class MapApp:
                 t_delay,
                 h_discr,
                 acc,
-                dist
+                num_steps_mode2
             )
-            if not np.any(footprint_tab):
-                return []
-            return [(row[3], row[4]) for row in footprint_tab]
-
-        search_func = ss.sls_search2 if emode_sls else ss.short_search2
-        footprint_tab2 = ss.footprint_mode2(
-            search_func,
-            trj,
-            int_table,
-            h_int_min,
-            maxia,
-            t_int_lnc,
-            angle_step,
-            op_range,
-            det_range,
-            t_delay,
-            h_discr,
-            acc,
-            num_steps_mode2
-        )
-        fp_m1 = isec.fprint_m2tom1(footprint_tab2)
-        points = []
-        for part in fp_m1:
-            for row in part:
-                points.append((row[3], row[4]))  # x, y in km (same as Mode 1)
-        return points
+            fp_m1 = isec.fprint_m2tom1(footprint_tab2)
+            points = []
+            for part in fp_m1:
+                for row in part:
+                    points.append((row[3], row[4]))  # x, y in km (same as Mode 1)
+            return points
+        finally:
+            fcc_constants.sat_delay = sat_delay_prev
 
     def _apply_sidebar(self, skip_mlp_refresh=False):
         token = self.selected_token
@@ -2152,10 +2293,28 @@ class MapApp:
             token.show_center = bool(self.sidebar_vars["show_center"].get())
             token.show_sector = bool(self.sidebar_vars["show_sector"].get())
             token.use_sectoral = bool(self.sidebar_vars["use_sectoral"].get())
-            token.use_det_range_override = bool(self.sidebar_vars["use_det_range_override"].get())
+            raw_det_override = bool(self.sidebar_vars["use_det_range_override"].get())
+            raw_space_override = bool(self.sidebar_vars["use_space_based_delay"].get())
+            if raw_det_override and raw_space_override:
+                prev_det = bool(token.use_det_range_override)
+                prev_space = bool(token.use_space_based_delay)
+                if raw_space_override != prev_space:
+                    raw_det_override = False
+                elif raw_det_override != prev_det:
+                    raw_space_override = False
+                else:
+                    raw_space_override = False
+                self.sidebar_vars["use_det_range_override"].set(raw_det_override)
+                self.sidebar_vars["use_space_based_delay"].set(raw_space_override)
+            token.use_det_range_override = raw_det_override
             token.det_range_override_km = float(self.sidebar_vars["det_range_override"].get() or 0.0)
+            token.use_space_based_delay = raw_space_override
+            token.space_based_delay_s = max(0.0, float(self.sidebar_vars["space_based_delay_s"].get() or 0.0))
+            token.config["set_sat_delay"] = token.space_based_delay_s
             token.use_range_override = bool(self.sidebar_vars["use_range_override"].get())
             token.range_override_km = float(self.sidebar_vars["range_override"].get() or 0.0)
+            token.use_op_range_override = bool(self.sidebar_vars["use_op_range_override"].get())
+            token.op_range_override_km = float(self.sidebar_vars["op_range_override_km"].get() or 0.0)
 
             missile_list = self.sidebar_vars.get("missile_list")
             if missile_list is not None:
@@ -2244,6 +2403,8 @@ class MapApp:
         if token.kind == "ilp":
             self.sidebar_vars["center_dir"].set(f"{token.center_dir:.1f}")
             self.sidebar_vars["sector_width"].set(f"{token.sector_width:.1f}")
+            if "space_based_delay_s" in self.sidebar_vars:
+                self.sidebar_vars["space_based_delay_s"].set(f"{token.space_based_delay_s:.1f}")
 
     def _set_token_highlight(self, token, selected):
         color = "yellow" if selected else "white"
@@ -2604,11 +2765,36 @@ class MapApp:
 
     def _config_label(self, key):
         labels = {
+            "m_key": "Missile catalog #",
+            "i_key": "Interceptor catalog #",
+            "type": "Type",
+            "note": "Notes",
+            "cd_type": "Drag coefficient model",
+            "m_st": "Stage mass (kg)",
+            "m_fu": "Fuel mass (kg)",
+            "v_ex": "Exhaust velocity (m/s)",
+            "t_bu": "Burn time (s)",
+            "t_delay": "Interceptor launch delay (s)",
+            "a_mid": "Midcourse drag area",
+            "a_nz": "Nozzle area",
+            "c_bal": "Ballistic coefficient",
+            "m_warhead": "Warhead mass (kg)",
+            "m_shroud": "Shroud mass (kg)",
+            "t_shroud": "Shroud release time (s)",
+            "m_pl": "Payload mass (kg)",
+            "vert_launch_height": "Vertical launch height (m)",
+            "grav_turn_angle": "Gravity turn angle (deg)",
+            "traj_type": "Trajectory type",
+            "flight_path_angle": "Flight path angle (deg)",
+            "mpia": "Minimum possible intercept altitude (km)",
+            "maxia": "Maximum intercept altitude (km)",
+            "op_range": "Operational range (km)",
+            "range": "Range (km)",
+            "det_range": "Detection range by missile type (km)",
             "mtype": "Threat missile (catalog #)",
             "itype": "Interceptor (catalog #)",
             "h_int_min": "Min intercept altitude (km)",
             "h_discr": "Warhead discrimination altitude (km)",
-            "t_delay": "Interceptor launch delay (s)",
             "h_int_min_list": "Min intercept altitude list (km)",
             "h_discr_list": "Discrimination altitude list (km)",
             "t_delay_list": "Launch delay list (s)",

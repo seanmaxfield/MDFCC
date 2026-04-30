@@ -1,3 +1,4 @@
+import os
 import sys, time, json
 import numpy as np
 from datetime import datetime
@@ -200,11 +201,17 @@ def run_balmis_range_vs_gth_list() :
     missile_data = rd.missile(mtype)
     bm.balmis_range_vs_gth_list(missile_data) # gt_height range is optional
 
+def _ensure_int_table_dir():
+    """Recreate int_tables if missing (e.g. folder was deleted)."""
+    os.makedirs(int_table_path, exist_ok=True)
+
+
 def run_interceptor_table(itype, f_name='', psi_step=0.25, keep_int_tables=set_keep_int_tables) : # time-consuming; not to be confused with interceptION_table
     """ This is building a set of interceptor trajectories with launch angle from 90 (from vertical)   """
     """ to 0 (not including 0) with a (default) step of 0.25 grad. This is the most time-consuming     """
     """ procedure, therefore save the result in a binary file to be used for further calculations      """
     
+    _ensure_int_table_dir()
     ind_flight_dataprint = False
 
     #itype = set_itype
@@ -238,6 +245,7 @@ def run_interception_table(i_type, rd_fname='', psi_step=0.25, beta_step=0.1, ke
     """ Sampling of the set of interceptor trajectories over "beta" flight path angle (from horizontal)  """
     """ starting from the lowest angle (negative) and up to 90 grad, with a (default) step of 0.25 (0.1) """
 
+    _ensure_int_table_dir()
     #itype = set_itype
     interceptor_data = rd.interceptor(i_type, rd_fname)
 
