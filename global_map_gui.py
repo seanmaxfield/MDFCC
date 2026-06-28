@@ -1,5 +1,7 @@
+import io
 import json
 import math
+import sys
 import threading
 import tempfile
 import os
@@ -40,6 +42,101 @@ try:
 except Exception:
     PIL_AVAILABLE = False
 
+try:
+    import matplotlib
+    matplotlib.use("TkAgg")
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+    MPL_TK_AVAILABLE = True
+except Exception:
+    MPL_TK_AVAILABLE = False
+
+try:
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+    MATPLOTLIB_TK_AVAILABLE = True
+except Exception:
+    MATPLOTLIB_TK_AVAILABLE = False
+
+
+class _TeeStream:
+    """Write stdout to multiple streams (terminal + capture buffer)."""
+
+    def __init__(self, *streams):
+        self._streams = streams
+
+    def write(self, data):
+        for stream in self._streams:
+            stream.write(data)
+
+    def flush(self):
+        for stream in self._streams:
+            stream.flush()
+
+
+def _build_flight_trajectory_figure(trj, title):
+    """Two-panel trajectory chart (path + speed/acceleration), matching fp_gui.gui_trajcharts."""
+    fig = Figure(figsize=(8.5, 3.4), dpi=100)
+    fig.suptitle(title, fontsize=11)
+
+    ax1 = fig.add_subplot(121)
+    ax2 = fig.add_subplot(122)
+    ax22 = ax2.twinx()
+
+    time = trj[:, 0]
+    x_pt = np.copy(trj[:, 1])
+    y_pt = np.copy(trj[:, 2])
+    x_ea = np.copy(trj[:, 1])
+    y_ea = np.copy(trj[:, 2])
+    x_at = np.copy(trj[:, 1])
+    y_at = np.copy(trj[:, 2])
+
+    i_max = len(time) - 1
+    al_max = trj[i_max, 2]
+    am2 = al_max / 2
+    d = R_e * math.sin(am2)
+
+    for i_tc in range(len(time)):
+        x_tc = d - x_pt[i_tc] * math.sin(am2 - y_pt[i_tc])
+        y_tc = x_pt[i_tc] * math.cos(y_pt[i_tc] - am2) - R_e * math.cos(am2)
+        x_pt[i_tc] = x_tc / 1000
+        y_pt[i_tc] = y_tc / 1000
+
+        x_tx = d - R_e * math.sin(am2 - y_ea[i_tc])
+        y_tx = R_e * math.cos(y_ea[i_tc] - am2) - R_e * math.cos(am2)
+        x_ea[i_tc] = x_tx / 1000
+        y_ea[i_tc] = y_tx / 1000
+
+        x_tz = d / 1000 - (R_e / 1000 + 100) * math.sin(am2 - y_at[i_tc])
+        y_tz = (R_e / 1000 + 100) * math.cos(y_at[i_tc] - am2) - R_e / 1000 * math.cos(am2)
+        x_at[i_tc] = x_tz
+        y_at[i_tc] = y_tz
+
+    v_pt = trj[:, 3] / 1000
+    a_pt = trj[:, 4]
+
+    ax1.set_xlabel("x distance, km")
+    ax1.set_ylabel("y distance, km")
+    ax2.set_xlabel("time, s")
+    ax2.set_ylabel("speed, km/s")
+    ax22.set_ylabel("acceleration, m/s²")
+
+    ax1.plot(x_ea, y_ea, c="black", linestyle="-", linewidth=1, label="earth")
+    ax1.plot(x_pt, y_pt, c="red", linestyle="-", linewidth=1, label="trajectory")
+    ax1.plot(x_at, y_at, c="blue", linestyle=":", linewidth=1, label="atmosphere")
+    ax2.plot(time, v_pt, c="blue", linestyle="-", linewidth=1, label="speed")
+    ax22.plot(time, a_pt, c="green", linestyle="-", linewidth=1, label="acceleration")
+    ax22.axhline(y=0, c="black", linewidth=0.75, linestyle="--")
+
+    ax1.set_title("trajectory", fontsize=10)
+    ax2.set_title("speed and acceleration", fontsize=10)
+    ax1.legend(loc="best", frameon=False)
+    ax2.legend(loc=(0.35, 0.925), frameon=False)
+    ax22.legend(loc=(0.35, 0.88), frameon=False)
+    ax1.axis("equal")
+    fig.tight_layout(rect=[0, 0, 1, 0.94])
+    return fig
+
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "fcc_config.json")
@@ -51,30 +148,41 @@ MIN_ZOOM = 1.0
 MAX_ZOOM = 128.0
 
 THEME = {
-    "root_bg": "#1a1b26",
-    "panel_bg": "#24283b",
-    "panel_inner": "#1f2335",
-    "titlebar": "#2b3047",
-    "toolbar_bg": "#24283b",
-    "border": "#414868",
-    "fg": "#c0caf5",
-    "fg_muted": "#9aa5ce",
-    "accent": "#7aa2f7",
-    "accent_dim": "#5a7cc9",
-    "success": "#9ece6a",
-    "danger": "#f7768e",
-    "warning": "#e0af68",
-    "entry_bg": "#16161e",
-    "list_bg": "#16161e",
-    "list_fg": "#c0caf5",
-    "select_bg": "#414868",
-    "map_stripe": "#161620",
-    # Light fills + dark labels: readable on macOS where tk.Button often renders as a light native chip
-    "tool_btn_bg": "#c5d0e8",
-    "tool_btn_fg": "#0f172a",
-    "tool_btn_hover": "#aab9d9",
-    "tool_btn_active_bg": "#8fa4c8",
-    "tool_btn_active_fg": "#020617",
+    "root_bg": "#0e1117",
+    "panel_bg": "#181c27",
+    "panel_inner": "#12151e",
+    "titlebar": "#222736",
+    "toolbar_bg": "#181c27",
+    "border": "#2b3142",
+    "fg": "#e7ecf6",
+    "fg_muted": "#98a2b8",
+    "accent": "#6d8cff",
+    "accent_dim": "#3f56b8",
+    "accent_fg": "#ffffff",
+    "success": "#54d98c",
+    "danger": "#f87171",
+    "warning": "#fbbf24",
+    "entry_bg": "#0d1019",
+    "list_bg": "#0d1019",
+    "list_fg": "#e7ecf6",
+    "select_bg": "#2b3450",
+    "map_stripe": "#12121c",
+    # Secondary buttons: light chip + dark label (renders reliably on macOS native buttons)
+    "tool_btn_bg": "#dde5f3",
+    "tool_btn_fg": "#16203a",
+    "tool_btn_hover": "#c6d2e9",
+    "tool_btn_active_bg": "#aebdda",
+    "tool_btn_active_fg": "#0b1020",
+    # Primary action buttons: accent chip + white label (ttk honors the bg)
+    "primary_btn_bg": "#6d8cff",
+    "primary_btn_fg": "#ffffff",
+    "primary_btn_hover": "#577af2",
+    "primary_btn_active": "#4a63c0",
+    # tk.Button often renders a LIGHT native chip on macOS regardless of bg, so for the
+    # custom tk buttons use a dark, high-contrast label (+ accent border for "primary").
+    "primary_text": "#16307a",
+    "armed_text": "#7c2d12",   # placement-armed (warning) label
+    "armed_bg": "#fde68a",     # placement-armed chip
 }
 
 HELP = {
@@ -84,6 +192,7 @@ HELP = {
     "check_coverage": "Walkthrough: pick an ILP and MLP (by name or by clicking the map), then click a target point. Shows whether that point lies inside the computed footprint.",
     "measure_distance": "Click two points (existing units or anywhere on the map) to measure geodesic distance in kilometers.",
     "map_pan": "Drag with the left mouse button on empty map to pan. Right-drag also pans. Drag units or handles to move or aim.",
+    "fp_layers": "When a defense site has multiple Calculation Modes or footprint layers, click its star marker once (without dragging) to switch Calculation Mode and show or hide individual layers on the map.",
     "toggle_library": "Show or hide the left library panel. Drag its title bar to move it.",
     "add_ilp": "Interceptor launch point — models where batteries could engage. Click the map to place; drag the unit or the green/gray handles to aim the sector.",
     "add_mlp": "Missile launch point — threat launch locations used with range rings and coverage checks.",
@@ -104,13 +213,36 @@ HELP = {
     "show_center": "Draw the green boresight line from the site.",
     "show_sector": "Draw the gray sector boundary lines.",
     "sectoral_fp": "When computing footprints, clip results to the sector instead of full 360°.",
-    "det_override": "Use a fixed detection range (km) instead of the native interceptor detection range. Mutually exclusive with space-based override.",
+    "threat_arc": "Show sampled threat launch points (gold dots) on a curved line at the missile's range, spanning the sector — i.e. where the incoming missile could be coming from. Click a dot to isolate that single launch point and recompute the footprint for it.",
+    "clear_isolation": "Clear an isolated launch point and recompute the footprint for the full sector again.",
+    "from_mlp": "Compute the defended footprint against a threat originating from one fixed launch point you place on the map. Unlike the standard footprint (which assumes max-range trajectories everywhere), here the MLP→target range — and therefore the missile trajectory — changes for each analyzed target point.",
+    "from_mlp_loft": "For target points closer than the missile's max range, two trajectories reach them: a lofted (high, slow) and a depressed (flat, fast) one. Choose lofted here; otherwise depressed is used.",
+    "from_mlp_set": "Then click the map to place the threat launch point (a yellow dot). Drag the dot afterward to move it; the boresight auto-points at it.",
+    "from_mlp_compute": "Compute the footprint(s) for the placed launch point, honoring the same interceptor, threat, detection, and engagement settings as the standard footprint.",
+    "from_ranges_compute": "For every selected threat missile at once, place its launch point at the central (boresight) dot on its own max-range arc and compute the from-launch-point footprint. One layer per missile, each oriented along the boresight.",
+    "full_sector_compute": "Fan the standard (max-range-everywhere) footprint across a set of boresights spanning the sector (count = Threat dots per sector) and layer them all. Each layer's name carries its boresight angle, missile, and interceptor.",
+    "pct100": "After running Full Sector: show only the region defended in 100% of the sampled boresights (the intersection of all boresight footprints) per missile/interceptor.",
+    "launch_box": "Drag a dotted box on the map; the system samples a grid of missile launch points inside it and overlays a from-launch-point footprint for each. A small panel above the box lets you pick which selected missile types the box fires.",
+    "builder": "Open the Missile/Interceptor Builder: edit physics specs and see the trajectory, speed, and range update live (and drag the trajectory to change the launch angle). Autofill specs from a text description via AIP, then Save & Inject into the rocket library.",
+    "det_override": "Use a fixed slant-range detection cue (km) instead of the native pairing value. This limits when the interceptor is allowed to start engaging the inbound threat — not the maximum ground distance of the footprint. Re-run the footprint calculation after changing this. Mutually exclusive with space-based override.",
+    "det_sweep": "Plot multiple footprint overlays from a comma-separated set of detection ranges in km (e.g. 100,300,600).",
     "space_delay": "Override native detection with space-based cueing. Set delay in seconds (default 30). Mutually exclusive with fixed detection-range override.",
     "range_override": "Override the threat’s maximum range from rocket data for footprint math only.",
     "op_range_override": "For footprint display only: replace the interceptor’s operational range from rocket_data (km). Use for terminal-phase or notional envelope studies; does not change the interceptor trajectory table.",
     "assign_gbewr": "Early-warning radars whose detection arcs feed this defense site in Mode 2 / combined solves.",
     "procedures": "Launch detailed analysis windows from fp_gui.py using this site’s configuration.",
     "footprint_cfg": "Advanced solver parameters mirrored from fcc_config.json for this token.",
+}
+
+# User-facing labels for stored footprint calculation modes (ILP).
+FOOTPRINT_CALC_MODES = {
+    "classic": "Max range (each target at max range)",
+    "from_mlp": "From launch point",
+    "from_ranges": "Boresight at each max range",
+    "full_sector": "All max distances, full sector",
+    "pct100": "100% interceptable",
+    "launch_box": "Launch box",
+    "isolated_lp": "Isolated launch point",
 }
 
 
@@ -252,13 +384,23 @@ def save_gbewr_data(radars):
         json.dump({"gbewr_radars": radars}, f, indent=4)
 
 
-def normalize_xy_to_meters(xy_points):
+FOOTPRINT_XY_UNITS = "km"
+
+
+def footprint_xy_to_meters(xy_points, units=FOOTPRINT_XY_UNITS):
+    """
+    Convert local footprint points to meters with explicit units.
+
+    The footprint solver returns local x/y in kilometers; this function keeps
+    the unit contract explicit to avoid accidental 1000x scaling errors.
+    """
     if not xy_points:
         return []
-    max_val = max(max(abs(x), abs(y)) for x, y in xy_points)
-    if max_val < 1e5:
-        return [(x * 1000.0, y * 1000.0) for x, y in xy_points]
-    return xy_points
+    if units == "m":
+        return [(float(x), float(y)) for x, y in xy_points]
+    if units == "km":
+        return [(float(x) * 1000.0, float(y) * 1000.0) for x, y in xy_points]
+    raise ValueError(f"Unsupported footprint units: {units}")
 
 
 def clamp(value, low, high):
@@ -277,8 +419,27 @@ class Token:
         self.show_center = True
         self.show_sector = True
         self.use_sectoral = False
+        # Threat-origin sampling arc (where the incoming missile is "coming from").
+        self.show_threat_arc = True
+        self.threat_arc_samples = 9
+        self.isolated_azimuth = None       # deg; when set, footprint is computed/shown for this azimuth only
+        self.isolated_missile_key = None   # the missile type of the isolated launch point
+        self.threat_arc_dots = []          # runtime registry: {item, azimuth, missile_key, lat, lon}
+        # Fixed launch point (single MLP) footprint mode
+        self.fixed_mlp_latlon = None       # (lat, lon) of a placed threat launch point, or None
+        self._saved_mlp_latlon = None      # launch point saved while an arc dot is isolated
+        self.fixed_mlp_loft = False        # lofted (True) vs depressed (False) trajectory for sub-max ranges
+        self.from_mlp_mode = False         # True when current footprints were computed from the fixed MLP
+        self.full_sector_mode = False      # True when current footprints are the per-boresight full-sector set
+        # Launch box: a drawn region MLPs are sampled from. dict with corners + firing missiles + grid.
+        self.launch_box = None  # {"lat1","lon1","lat2","lon2","missile_keys":[...],"grid_n":int}
+        self._mlp_btn_state = "idle"      # idle | placing | placed (stateful compute button)
+        self._box_btn_state = "idle"      # idle | drawing | drawn
+        self._calc_mode_offset = None     # (dx, dy) of the on-map calc-mode box relative to the ILP
         self.use_det_range_override = False
         self.det_range_override_km = 0.0
+        self.use_det_sweep = False
+        self.det_sweep_km_csv = ""
         self.use_space_based_delay = False
         self.use_range_override = False
         self.range_override_km = 0.0
@@ -287,7 +448,11 @@ class Token:
         self.config = json.loads(json.dumps(base_config))
         self.space_based_delay_s = float(self.config.get("set_sat_delay", fcc_constants.sat_delay))
         self.missile_keys = [int(self.config.get("mtype", 1))]
+        self.interceptor_keys = [int(self.config.get("itype", 11))]
         self.footprints = []
+        self.footprint_visibility = {}  # fp_id -> bool (display only; data kept in footprints)
+        self.footprint_calculations = {}  # mode_id -> {label, footprints, footprint_visibility, ...}
+        self.active_footprint_mode = None
         self.missile_ranges = []
         self.canvas_items = {}
         self.gbewr_assigned = []  # list of GBEWR token_ids assigned to this ILP
@@ -310,20 +475,31 @@ class ScrollableFrame(tk.Frame):
         self.h_scrollbar = ttk.Scrollbar(self, orient="horizontal", command=self.canvas.xview)
         self.inner = tk.Frame(self.canvas, bg=THEME["panel_inner"])
 
-        self.inner.bind(
-            "<Configure>",
-            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")),
-        )
-
-        self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
+        self._win_id = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
+        self._last_win_w = 0
+        self.inner.bind("<Configure>", self._sync_scroll)
+        self.canvas.bind("<Configure>", self._sync_scroll)
         self.canvas.configure(yscrollcommand=self.v_scrollbar.set, xscrollcommand=self.h_scrollbar.set)
 
-        self.canvas.pack(side="left", fill="both", expand=True)
+        # vertical scrollbar always on the right; horizontal along the bottom
         self.v_scrollbar.pack(side="right", fill="y")
         self.h_scrollbar.pack(side="bottom", fill="x")
+        self.canvas.pack(side="left", fill="both", expand=True)
 
         self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
         self.canvas.bind_all("<Shift-MouseWheel>", self._on_shift_mousewheel)
+
+    def _sync_scroll(self, _event=None):
+        # Make the inner window at least the canvas width (so content fills the panel),
+        # but allow it to grow wider than the canvas so wide content scrolls horizontally
+        # instead of being clipped.
+        cw = self.canvas.winfo_width()
+        req = self.inner.winfo_reqwidth()
+        target = max(cw, req)
+        if target != self._last_win_w:
+            self._last_win_w = target
+            self.canvas.itemconfigure(self._win_id, width=target)
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
     def _on_mousewheel(self, event):
         self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
@@ -488,6 +664,13 @@ class MapApp:
         self.rocket_data = load_rocket_data()
         self.tokens = {}
         self.selected_token = None
+        self._missile_range_cache = {}  # m_key -> range km (cleared when rocket data changes)
+        self._suppress_sidebar_trace = False  # guard: ignore field traces during programmatic var updates
+        self.placing_fixed_mlp_for = None  # token_id awaiting a fixed-MLP placement click
+        self.drawing_launch_box_for = None  # token_id awaiting a drag-drawn launch box
+        self._launch_box_start = None       # (x, y) press point while rubber-banding the box
+        self._launch_box_rubber = None      # canvas id of the rubber-band rectangle
+        self._launch_box_popup = None       # missile-selection popup for the launch box
         self.add_mode = None
         self.drag_state = None
         self.map_image = None
@@ -512,6 +695,9 @@ class MapApp:
         self.coverage_mode = None
         self.coverage_pins = []
         self.distance_mode = None
+        self._token_press_moved = False
+        self._footprint_layer_popup = None
+        self._interceptor_flight_preview_win = None
 
         self._build_ui()
         self.root.after_idle(self._draw_base_map)
@@ -525,49 +711,87 @@ class MapApp:
         style.configure(".", background=THEME["root_bg"], foreground=fg, fieldbackground=THEME["entry_bg"])
         style.configure("TFrame", background=bg)
         style.configure("TLabel", background=bg, foreground=fg)
-        style.configure("TButton", padding=(10, 6))
+        style.configure("TButton", padding=(12, 7), relief="flat", borderwidth=0,
+                        background=THEME["titlebar"], foreground=fg, focuscolor=THEME["accent"])
         style.map(
             "TButton",
-            background=[("active", THEME["titlebar"]), ("!disabled", THEME["toolbar_bg"])],
+            background=[("pressed", THEME["accent_dim"]), ("active", THEME["border"]),
+                        ("!disabled", THEME["titlebar"])],
             foreground=[("!disabled", fg)],
         )
+        # Primary (accent) action button
+        style.configure("Primary.TButton", padding=(12, 7), relief="flat", borderwidth=0,
+                        background=THEME["accent"], foreground=THEME["accent_fg"])
+        style.map("Primary.TButton",
+                  background=[("pressed", THEME["primary_btn_active"]), ("active", THEME["primary_btn_hover"]),
+                              ("!disabled", THEME["accent"])],
+                  foreground=[("!disabled", THEME["accent_fg"])])
         style.configure("TNotebook", background=bg, borderwidth=0)
-        style.configure("TNotebook.Tab", background=THEME["titlebar"], foreground=THEME["fg_muted"], padding=(12, 6))
-        style.map("TNotebook.Tab", background=[("selected", THEME["accent_dim"])], foreground=[("selected", "#ffffff")])
-        style.configure("TEntry", fieldbackground=THEME["entry_bg"], foreground=fg, insertcolor=fg)
-        style.configure("TCheckbutton", background=bg, foreground=fg)
+        style.configure("TNotebook.Tab", background=THEME["panel_inner"], foreground=THEME["fg_muted"],
+                        padding=(14, 7), borderwidth=0)
+        style.map("TNotebook.Tab",
+                  background=[("selected", THEME["panel_bg"])],
+                  foreground=[("selected", THEME["accent"])])
+        # Entries with an accent focus ring
+        style.configure("TEntry", fieldbackground=THEME["entry_bg"], foreground=fg, insertcolor=fg,
+                        bordercolor=THEME["border"], lightcolor=THEME["border"], darkcolor=THEME["border"],
+                        padding=4)
+        style.map("TEntry",
+                  bordercolor=[("focus", THEME["accent"])],
+                  lightcolor=[("focus", THEME["accent"])],
+                  darkcolor=[("focus", THEME["accent"])])
+        style.configure("TCheckbutton", background=bg, foreground=fg, focuscolor=THEME["accent"])
+        style.map("TCheckbutton",
+                  indicatorcolor=[("selected", THEME["accent"]), ("!selected", THEME["entry_bg"])],
+                  foreground=[("active", THEME["accent"])])
+        style.configure("TRadiobutton", background=bg, foreground=fg, focuscolor=THEME["accent"])
+        style.map("TRadiobutton",
+                  indicatorcolor=[("selected", THEME["accent"]), ("!selected", THEME["entry_bg"])],
+                  foreground=[("active", THEME["accent"])])
         style.configure(
             "TCombobox",
             fieldbackground=THEME["entry_bg"],
             background=THEME["entry_bg"],
             foreground=fg,
-            arrowcolor=fg,
+            arrowcolor=THEME["accent"],
+            bordercolor=THEME["border"],
+            padding=4,
         )
-        style.map("TCombobox", fieldbackground=[("readonly", THEME["entry_bg"])])
-        style.configure("Vertical.TScrollbar", background=THEME["titlebar"], troughcolor=THEME["panel_inner"])
-        style.configure("Horizontal.TScrollbar", background=THEME["titlebar"], troughcolor=THEME["panel_inner"])
+        style.map("TCombobox",
+                  fieldbackground=[("readonly", THEME["entry_bg"])],
+                  bordercolor=[("focus", THEME["accent"])])
+        style.configure("TScale", background=bg, troughcolor=THEME["entry_bg"])
+        style.configure("Vertical.TScrollbar", background=THEME["border"], troughcolor=THEME["panel_inner"],
+                        bordercolor=THEME["panel_inner"], arrowcolor=THEME["fg_muted"], arrowsize=12)
+        style.configure("Horizontal.TScrollbar", background=THEME["border"], troughcolor=THEME["panel_inner"],
+                        bordercolor=THEME["panel_inner"], arrowcolor=THEME["fg_muted"], arrowsize=12)
 
-    def _map_tool_btn(self, parent, text, command, tooltip=None):
-        bg = THEME["tool_btn_bg"]
-        hover = THEME["tool_btn_hover"]
-        fg = THEME["tool_btn_fg"]
+    def _map_tool_btn(self, parent, text, command, tooltip=None, primary=False):
+        bg = THEME["tool_btn_bg"]; hover = THEME["tool_btn_hover"]
+        act_bg = THEME["tool_btn_active_bg"]
+        if primary:
+            fg = THEME["primary_text"]; act_fg = THEME["primary_text"]
+            hl, hlc = 2, THEME["accent"]
+        else:
+            fg = THEME["tool_btn_fg"]; act_fg = THEME["tool_btn_active_fg"]
+            hl, hlc = 0, bg
         b = tk.Button(
             parent,
             text=text,
             command=command,
             bg=bg,
             fg=fg,
-            activebackground=THEME["tool_btn_active_bg"],
-            activeforeground=THEME["tool_btn_active_fg"],
+            activebackground=act_bg,
+            activeforeground=act_fg,
             relief="flat",
             borderwidth=0,
             padx=14,
             pady=8,
             cursor="hand2",
             font=("TkDefaultFont", 10, "bold"),
-            highlightthickness=0,
-            highlightbackground=bg,
-            highlightcolor=bg,
+            highlightthickness=hl,
+            highlightbackground=hlc,
+            highlightcolor=hlc,
         )
 
         def on_enter(_e):
@@ -631,7 +855,7 @@ class MapApp:
 
         self.map_toolbar = tk.Frame(self.map_shell, bg=THEME["toolbar_bg"], height=52)
         self.map_toolbar.grid(row=0, column=0, sticky="ew")
-        self.map_toolbar.grid_columnconfigure(7, weight=1)
+        self.map_toolbar.grid_columnconfigure(9, weight=1)
 
         self.check_coverage_btn = self._map_tool_btn(
             self.map_toolbar, "Coverage check", self._start_coverage_check, HELP["check_coverage"]
@@ -663,6 +887,21 @@ class MapApp:
         )
         self.add_gbewr_btn.grid(row=0, column=6, padx=4, pady=8, sticky="w")
 
+        tk.Frame(self.map_toolbar, width=1, bg=THEME["border"]).grid(row=0, column=7, sticky="ns", padx=8, pady=10)
+
+        self.builder_btn = self._map_tool_btn(
+            self.map_toolbar, "✦ Builder", self._open_builder, HELP["builder"], primary=True
+        )
+        self.builder_btn.grid(row=0, column=8, padx=4, pady=8, sticky="w")
+
+        # column 9 is the stretchy spacer; the busy spinner + status sit on the far right
+        self._spin_canvas = tk.Canvas(self.map_toolbar, width=18, height=18,
+                                      bg=THEME["toolbar_bg"], highlightthickness=0)
+        self._spin_canvas.grid(row=0, column=10, padx=(8, 0), pady=8, sticky="e")
+        self._spin_canvas.grid_remove()  # hidden until busy
+        self._spin_angle = 0
+        self._spin_job = None
+
         self.status_var = tk.StringVar(value="Ready")
         self.status_label = tk.Label(
             self.map_toolbar,
@@ -671,7 +910,9 @@ class MapApp:
             fg=THEME["success"],
             font=("TkDefaultFont", 10),
         )
-        self.status_label.grid(row=0, column=8, padx=16, pady=8, sticky="e")
+        self.status_label.grid(row=0, column=11, padx=(6, 16), pady=8, sticky="e")
+        # animate the spinner whenever a "Computing…" status is showing
+        self.status_var.trace_add("write", self._on_status_change)
 
         self.map_canvas = tk.Canvas(self.map_shell, bg="#ffffff", highlightthickness=0)
         self.map_canvas.grid(row=1, column=0, sticky="nsew")
@@ -770,28 +1011,36 @@ class MapApp:
 
         ToolTip(self.left_draggable.title_label, HELP["library"], delay_ms=500)
 
-    def _lib_btn(self, parent, text, command, fg_color=None, active_fg=None):
-        bg = THEME["tool_btn_bg"]
-        hover = THEME["tool_btn_hover"]
-        fg = fg_color if fg_color is not None else THEME["tool_btn_fg"]
-        act_fg = active_fg if active_fg is not None else THEME["tool_btn_active_fg"]
+    def _lib_btn(self, parent, text, command, fg_color=None, active_fg=None, primary=False, bg_color=None):
+        # tk.Button bg is unreliable on macOS (light native chip), so keep the light chip
+        # and use dark/high-contrast labels; "primary" adds a bold accent label + border.
+        bg = bg_color if bg_color is not None else THEME["tool_btn_bg"]
+        hover = THEME["tool_btn_hover"] if bg_color is None else bg
+        if primary:
+            fg = fg_color if fg_color is not None else THEME["primary_text"]
+            act_fg = active_fg or fg
+            hl, hlc = 2, THEME["accent"]
+        else:
+            fg = fg_color if fg_color is not None else THEME["tool_btn_fg"]
+            act_fg = active_fg or THEME["tool_btn_active_fg"]
+            hl, hlc = 0, bg
         b = tk.Button(
             parent,
             text=text,
             command=command,
             bg=bg,
             fg=fg,
-            activebackground=THEME["tool_btn_active_bg"],
+            activebackground=THEME["tool_btn_active_bg"] if bg_color is None else bg,
             activeforeground=act_fg,
             relief="flat",
             borderwidth=0,
-            padx=10,
+            padx=12,
             pady=6,
             cursor="hand2",
             font=("TkDefaultFont", 9, "bold"),
-            highlightthickness=0,
-            highlightbackground=bg,
-            highlightcolor=bg,
+            highlightthickness=hl,
+            highlightbackground=hlc,
+            highlightcolor=hlc,
         )
 
         def on_enter(_e):
@@ -1139,6 +1388,7 @@ class MapApp:
             }
             self.rocket_data[1].append(new_item)
         save_rocket_data(self.rocket_data)
+        self._missile_range_cache.clear()
         self._refresh_type_list(kind)
 
     def _save_type(self, kind):
@@ -1188,6 +1438,7 @@ class MapApp:
             if not updated:
                 container.append(data)
             save_rocket_data(self.rocket_data)
+            self._missile_range_cache.clear()
 
         self._refresh_type_list(kind)
         if self.selected_token:
@@ -1208,11 +1459,14 @@ class MapApp:
             self._shell_place_panels()
         self._on_canvas_resize(None)
 
+    def _insp_container(self):
+        return getattr(self, "_insp_host", None) or self.scrollable.inner
+
     def _inspector_sep(self):
-        ttk.Separator(self.scrollable.inner, orient="horizontal").pack(fill="x", padx=6, pady=8)
+        ttk.Separator(self._insp_container(), orient="horizontal").pack(fill="x", padx=6, pady=8)
 
     def _inspector_heading(self, text, help_key=None):
-        row = tk.Frame(self.scrollable.inner, bg=THEME["panel_inner"])
+        row = tk.Frame(self._insp_container(), bg=THEME["panel_inner"])
         row.pack(fill="x", padx=6, pady=(10, 4))
         tk.Label(
             row,
@@ -1223,6 +1477,42 @@ class MapApp:
         ).pack(side="left")
         if help_key:
             _help_icon(row, HELP[help_key]).pack(side="left", padx=6)
+
+    def _collapsible(self, title, help_key=None, opened=True):
+        """A click-to-collapse section. Widgets created after this (via the layout
+        helpers, or parented to the returned body) live inside the section."""
+        root = self.scrollable.inner
+        sec = tk.Frame(root, bg=THEME["panel_inner"])
+        sec.pack(fill="x", padx=2, pady=(6, 0))
+        header = tk.Frame(sec, bg=THEME["titlebar"], cursor="hand2")
+        header.pack(fill="x")
+        state = {"open": opened}
+        arrow = tk.Label(header, text=("▾" if opened else "▸"), bg=THEME["titlebar"],
+                         fg=THEME["accent"], font=("TkDefaultFont", 10, "bold"))
+        arrow.pack(side="left", padx=(8, 4), pady=4)
+        lbl = tk.Label(header, text=title, bg=THEME["titlebar"], fg=THEME["fg"],
+                       font=("TkDefaultFont", 11, "bold"))
+        lbl.pack(side="left", pady=4)
+        if help_key:
+            _help_icon(header, HELP[help_key]).pack(side="left", padx=6)
+        body = tk.Frame(sec, bg=THEME["panel_inner"])
+        if opened:
+            body.pack(fill="x")
+
+        def toggle(_e=None):
+            state["open"] = not state["open"]
+            arrow.config(text="▾" if state["open"] else "▸")
+            if state["open"]:
+                body.pack(fill="x")
+            else:
+                body.pack_forget()
+        for w in (header, arrow, lbl):
+            w.bind("<Button-1>", toggle)
+        self._insp_host = body
+        return body
+
+    def _end_section(self):
+        self._insp_host = self.scrollable.inner
 
     def _sidebar_list_kw(self, height):
         return dict(
@@ -1244,17 +1534,23 @@ class MapApp:
         self.sidebar_vars.clear()
 
         inner = self.scrollable.inner
+        self._insp_host = inner
         if token is None:
             f = tk.Frame(inner, bg=THEME["panel_inner"])
-            f.pack(anchor="w", padx=6, pady=12)
-            tk.Label(
-                f,
-                text="Nothing selected",
-                bg=THEME["panel_inner"],
-                fg=THEME["fg_muted"],
-                font=("TkDefaultFont", 11),
-            ).pack(anchor="w")
-            _help_icon(f, HELP["insp_empty"]).pack(anchor="w", pady=(8, 0))
+            f.pack(fill="x", padx=12, pady=24)
+            tk.Label(f, text="Nothing selected", bg=THEME["panel_inner"], fg=THEME["fg"],
+                     font=("TkDefaultFont", 13, "bold")).pack(anchor="w")
+            tk.Label(f, text="Select a unit on the map to edit it, or place one from the toolbar:",
+                     bg=THEME["panel_inner"], fg=THEME["fg_muted"], font=("TkDefaultFont", 10),
+                     wraplength=300, justify="left").pack(anchor="w", pady=(6, 10))
+            for icon, name in (("◆", "Defense site (interceptors)"),
+                               ("⬢", "Threat launch"),
+                               ("▲", "Early-warning radar")):
+                row = tk.Frame(f, bg=THEME["panel_inner"]); row.pack(anchor="w", pady=1)
+                tk.Label(row, text=icon, bg=THEME["panel_inner"], fg=THEME["accent"],
+                         font=("TkDefaultFont", 12)).pack(side="left", padx=(0, 8))
+                tk.Label(row, text=name, bg=THEME["panel_inner"], fg=THEME["fg_muted"],
+                         font=("TkDefaultFont", 10)).pack(side="left")
             return
 
         kind_title = {"ilp": "Defense site (ILP)", "mlp": "Threat launch (MLP)", "gbewr": "Early-warning radar"}[token.kind]
@@ -1280,6 +1576,12 @@ class MapApp:
         elif token.kind == "ilp":
             self._add_entry("Boresight azimuth (°)", token.center_dir, "center_dir", HELP["boresight"])
             self._add_entry("Sector width (°)", token.sector_width, "sector_width", HELP["sector_w"])
+            # Live-update the sector drawing and threat-origin dots while these are edited,
+            # so the arc tracks the sector without needing to press Apply.
+            for _fld in ("center_dir", "sector_width"):
+                _v = self.sidebar_vars.get(_fld)
+                if _v is not None:
+                    _v.trace_add("write", lambda *a: self._on_sector_field_change())
 
             self._inspector_heading("Threat models for this site", "threat_types")
             missile_frame = ttk.Frame(inner)
@@ -1291,6 +1593,30 @@ class MapApp:
             missile_scroll.pack(side="right", fill="y")
             self.sidebar_vars["missile_list"] = missile_list
             self._populate_missile_list(token, missile_list)
+            missile_list.bind("<<ListboxSelect>>", lambda e: self._on_missile_select())
+
+            self._inspector_heading("Interceptor models for this site", None)
+            interceptors = self._get_interceptors()
+            int_labels = [f"i{item.get('i_key', '')}: {item.get('type', '')}" for item in interceptors]
+            int_keys = [int(item.get("i_key", 0)) for item in interceptors]
+            self.sidebar_vars["ilp_itype_keys"] = int_keys
+            if int_labels:
+                i_combo = ttk.Combobox(inner, values=int_labels, state="readonly", width=40)
+                current_itype = int(token.config.get("itype", token.interceptor_keys[0] if token.interceptor_keys else 11))
+                idx = next((i for i, k in enumerate(int_keys) if k == current_itype), 0)
+                i_combo.current(idx)
+                i_combo.pack(anchor="w", padx=6, pady=2)
+                self.sidebar_vars["ilp_itype_combo"] = i_combo
+
+            int_frame = ttk.Frame(inner)
+            int_frame.pack(fill="x", padx=6, pady=2)
+            int_list = tk.Listbox(int_frame, selectmode="multiple", **self._sidebar_list_kw(5))
+            int_scroll = ttk.Scrollbar(int_frame, orient="vertical", command=int_list.yview)
+            int_list.configure(yscrollcommand=int_scroll.set)
+            int_list.pack(side="left", fill="x", expand=True)
+            int_scroll.pack(side="right", fill="y")
+            self.sidebar_vars["interceptor_list"] = int_list
+            self._populate_interceptor_list(token, int_list)
         elif token.kind == "mlp":
             self._inspector_heading("Threat missile types at this launch", "threat_types")
             missile_frame = ttk.Frame(inner)
@@ -1302,12 +1628,14 @@ class MapApp:
             missile_scroll.pack(side="right", fill="y")
             self.sidebar_vars["mlp_missile_list"] = missile_list
             self._populate_missile_list(token, missile_list)
+            missile_list.bind("<<ListboxSelect>>", lambda e: self._on_missile_select())
 
         if token.kind == "ilp":
             show_center_var = tk.BooleanVar(value=token.show_center)
             show_sector_var = tk.BooleanVar(value=token.show_sector)
             use_sectoral_var = tk.BooleanVar(value=token.use_sectoral)
             use_det_override_var = tk.BooleanVar(value=token.use_det_range_override)
+            use_det_sweep_var = tk.BooleanVar(value=token.use_det_sweep)
             use_space_delay_var = tk.BooleanVar(value=token.use_space_based_delay)
             use_range_override_var = tk.BooleanVar(value=token.use_range_override)
             use_op_range_override_var = tk.BooleanVar(value=token.use_op_range_override)
@@ -1315,15 +1643,27 @@ class MapApp:
             self.sidebar_vars["show_sector"] = show_sector_var
             self.sidebar_vars["use_sectoral"] = use_sectoral_var
             self.sidebar_vars["use_det_range_override"] = use_det_override_var
+            self.sidebar_vars["use_det_sweep"] = use_det_sweep_var
             self.sidebar_vars["use_space_based_delay"] = use_space_delay_var
             self.sidebar_vars["use_range_override"] = use_range_override_var
             self.sidebar_vars["use_op_range_override"] = use_op_range_override_var
-            self._inspector_heading("Overlay & footprint options", None)
-            self._insp_check(inner, "Show boresight line", show_center_var, HELP["show_center"], "show_center")
-            self._insp_check(inner, "Show sector edges", show_sector_var, HELP["show_sector"], "show_sector")
-            self._insp_check(inner, "Clip footprint to sector", use_sectoral_var, HELP["sectoral_fp"], "use_sectoral")
+            body = self._collapsible("Overlay & footprint options", "fp_layers", opened=False)
+            fp_hint = tk.Frame(body, bg=THEME["panel_inner"])
+            fp_hint.pack(fill="x", padx=6, pady=(2, 4))
+            tk.Label(
+                fp_hint,
+                text="Tip: after running multiple footprint calculations, click the site star (no drag) to switch Calculation Mode and show/hide layers.",
+                bg=THEME["panel_inner"],
+                fg=THEME["fg_muted"],
+                font=("TkDefaultFont", 9),
+                wraplength=380,
+                justify="left",
+            ).pack(side="left", anchor="w")
+            self._insp_check(body, "Show boresight line", show_center_var, HELP["show_center"], "show_center")
+            self._insp_check(body, "Show sector edges", show_sector_var, HELP["show_sector"], "show_sector")
+            self._insp_check(body, "Clip footprint to sector", use_sectoral_var, HELP["sectoral_fp"], "use_sectoral")
             self._insp_check(
-                inner,
+                body,
                 "Override detection range (fixed km)",
                 use_det_override_var,
                 HELP["det_override"],
@@ -1331,7 +1671,15 @@ class MapApp:
             )
             self._add_entry("Detection range (km)", token.det_range_override_km, "det_range_override", HELP["det_override"])
             self._insp_check(
-                inner,
+                body,
+                "Show multi-detection overlays",
+                use_det_sweep_var,
+                HELP["det_sweep"],
+                "use_det_sweep",
+            )
+            self._add_entry("Detection sweep list (km)", token.det_sweep_km_csv, "det_sweep_km_csv", HELP["det_sweep"])
+            self._insp_check(
+                body,
                 "Override with space-based detection",
                 use_space_delay_var,
                 HELP["space_delay"],
@@ -1341,7 +1689,7 @@ class MapApp:
             use_det_override_var.trace_add("write", lambda *_: self._on_det_mode_toggle("use_det_range_override"))
             use_space_delay_var.trace_add("write", lambda *_: self._on_det_mode_toggle("use_space_based_delay"))
             self._insp_check(
-                inner,
+                body,
                 "Override threat max range",
                 use_range_override_var,
                 HELP["range_override"],
@@ -1349,7 +1697,7 @@ class MapApp:
             )
             self._add_entry("Threat range override (km)", token.range_override_km, "range_override", HELP["range_override"])
             self._insp_check(
-                inner,
+                body,
                 "Override interceptor op range (footprint only)",
                 use_op_range_override_var,
                 HELP["op_range_override"],
@@ -1357,9 +1705,93 @@ class MapApp:
             )
             self._add_entry("Interceptor op range (km)", token.op_range_override_km, "op_range_override_km", HELP["op_range_override"])
 
-            self._inspector_sep()
-            self._inspector_heading("Linked radars", "assign_gbewr")
-            gbewr_frame = ttk.Frame(inner)
+            show_threat_arc_var = tk.BooleanVar(value=token.show_threat_arc)
+            self.sidebar_vars["show_threat_arc"] = show_threat_arc_var
+            self._insp_check(
+                body,
+                "Show threat-origin dots",
+                show_threat_arc_var,
+                HELP["threat_arc"],
+                "show_threat_arc",
+            )
+            self._add_entry("Threat dots per sector", token.threat_arc_samples, "threat_arc_samples", HELP["threat_arc"])
+            iso_row = tk.Frame(body, bg=THEME["panel_inner"])
+            iso_row.pack(fill="x", padx=6, pady=(2, 4))
+            iso_btn = self._lib_btn(iso_row, "Show full sector", self._reset_isolation_for_selected)
+            iso_btn.pack(side="left", padx=4)
+            ToolTip(iso_btn, HELP["clear_isolation"])
+
+            body = self._collapsible("Footprint calculations", "from_mlp", opened=True)
+            tk.Label(
+                body,
+                text="From-launch-point modes model a threat from a fixed spot (range/trajectory vary per target).",
+                bg=THEME["panel_inner"], fg=THEME["fg_muted"], font=("TkDefaultFont", 9),
+                wraplength=380, justify="left",
+            ).pack(fill="x", padx=6, pady=(2, 4))
+            fixed_mlp_loft_var = tk.BooleanVar(value=token.fixed_mlp_loft)
+            self.sidebar_vars["fixed_mlp_loft"] = fixed_mlp_loft_var
+            self._insp_check(body, "Lofted trajectory (vs depressed)", fixed_mlp_loft_var, HELP["from_mlp_loft"], "fixed_mlp_loft")
+
+            # --- launch point: one stateful button drives place -> proceed -> compute ---
+            mp_state = getattr(token, "_mlp_btn_state", "idle")
+            mp_row = tk.Frame(body, bg=THEME["panel_inner"])
+            mp_row.pack(fill="x", padx=6, pady=(4, 2))
+            if mp_state == "placing":
+                mb = self._lib_btn(mp_row, "● Click map to place launch point  (click here to cancel)",
+                                   lambda: self._mlp_button_action(token),
+                                   bg_color=THEME["armed_bg"], fg_color=THEME["armed_text"])
+            elif mp_state == "placed":
+                mb = self._lib_btn(mp_row, "✓ Place again (map) or proceed → compute",
+                                   lambda: self._mlp_button_action(token), primary=True)
+            else:
+                mb = self._lib_btn(mp_row, "Compute from launch point", lambda: self._mlp_button_action(token))
+            mb.pack(side="left", fill="x", expand=True, padx=4)
+            ToolTip(mb, HELP["from_mlp_compute"])
+            if getattr(token, "fixed_mlp_latlon", None):
+                self._lib_btn(mp_row, "Clear", self._clear_fixed_mlp_for_selected).pack(side="left", padx=4)
+
+            # --- launch box: one stateful button drives draw -> proceed -> compute ---
+            bx_state = getattr(token, "_box_btn_state", "idle")
+            bx_row = tk.Frame(body, bg=THEME["panel_inner"])
+            bx_row.pack(fill="x", padx=6, pady=(0, 2))
+            if bx_state == "drawing":
+                bb = self._lib_btn(bx_row, "▭ Drag a box on the map  (click here to cancel)",
+                                   lambda: self._box_button_action(token),
+                                   bg_color=THEME["armed_bg"], fg_color=THEME["armed_text"])
+            elif bx_state == "drawn":
+                bb = self._lib_btn(bx_row, "✓ Draw again (map) or proceed → compute",
+                                   lambda: self._box_button_action(token), primary=True)
+            else:
+                bb = self._lib_btn(bx_row, "Compute from launch box", lambda: self._box_button_action(token))
+            bb.pack(side="left", fill="x", expand=True, padx=4)
+            ToolTip(bb, HELP["launch_box"])
+            if getattr(token, "launch_box", None):
+                self._lib_btn(bx_row, "Clear box", self._clear_launch_box_for_selected).pack(side="left", padx=4)
+
+            # the other from-launch-point computations (concise labels, detail in tooltips)
+            for label, cmd, help_key in (
+                ("From each max-range (boresight)", self._run_footprint_from_ranges, "from_ranges_compute"),
+                ("All max distances, full sector", self._run_footprint_full_sector, "full_sector_compute"),
+                ("100% interceptable", self._show_100pct_interceptable, "pct100"),
+            ):
+                r = tk.Frame(body, bg=THEME["panel_inner"]); r.pack(fill="x", padx=6, pady=(0, 3))
+                btn = self._lib_btn(r, label, cmd)
+                btn.pack(side="left", fill="x", expand=True)
+                ToolTip(btn, HELP[help_key])
+
+            # primary action — kept top-level and prominent
+            self._end_section()
+            fp_btn_row = tk.Frame(inner, bg=THEME["panel_inner"])
+            fp_btn_row.pack(fill="x", padx=6, pady=(8, 8))
+            go_b = self._lib_btn(fp_btn_row, "Compute footprint (max-range)", self._run_footprint, primary=True)
+            go_b.pack(side="left", fill="x", expand=True, padx=4)
+            ToolTip(go_b, HELP["go_footprint"])
+            apply_b = self._lib_btn(fp_btn_row, "Apply", self._apply_sidebar)
+            apply_b.pack(side="left", padx=4)
+            ToolTip(apply_b, HELP["apply"])
+
+            body = self._collapsible("Linked radars", "assign_gbewr", opened=False)
+            gbewr_frame = ttk.Frame(body)
             gbewr_frame.pack(fill="x", padx=6, pady=2)
             gbewr_listbox = tk.Listbox(gbewr_frame, selectmode="multiple", **self._sidebar_list_kw(4))
             gbewr_scroll = ttk.Scrollbar(gbewr_frame, orient="vertical", command=gbewr_listbox.yview)
@@ -1379,48 +1811,57 @@ class MapApp:
             self.sidebar_vars["gbewr_token_ids"] = gbewr_token_ids
             gbewr_listbox.bind("<<ListboxSelect>>", lambda e: self._apply_sidebar())
 
-        if token.kind == "ilp":
-            self._inspector_sep()
-            self._inspector_heading("Analysis tools (fp_gui)", "procedures")
-            self._add_procedure_buttons(inner)
-
         if token.kind not in ("gbewr", "mlp"):
-            self._inspector_sep()
-            self._inspector_heading("Solver parameters", "footprint_cfg")
-
+            body = self._collapsible("Solver parameters", "footprint_cfg", opened=False)
             for key, value in token.config.items():
+                if token.kind == "ilp" and key == "itype":
+                    continue
                 field_id = f"cfg::{key}"
                 label = self._config_label(key)
                 tip = self._config_tooltip(key)
                 if isinstance(value, bool):
                     var = tk.BooleanVar(value=value)
-                    self._insp_check(inner, label, var, tip, field_id)
+                    self._insp_check(body, label, var, tip, field_id)
                 else:
                     self._add_entry(label, value, field_id, tip)
+            self._end_section()
 
-        self._inspector_sep()
-        btn_row = tk.Frame(inner, bg=THEME["panel_inner"])
-        btn_row.pack(fill="x", padx=6, pady=8)
-        apply_b = self._lib_btn(btn_row, "Apply", self._apply_sidebar)
-        apply_b.pack(side="left", padx=4)
-        ToolTip(apply_b, HELP["apply"])
         if token.kind == "ilp":
-            go_b = self._lib_btn(btn_row, "Compute footprint", self._run_footprint)
-            go_b.pack(side="left", padx=4)
-            ToolTip(go_b, HELP["go_footprint"])
-        elif token.kind == "mlp":
-            ur_b = self._lib_btn(btn_row, "Refresh range rings", self._run_mlp_ranges)
-            ur_b.pack(side="left", padx=4)
-            ToolTip(ur_b, HELP["update_range"])
-        del_b = self._lib_btn(
-            btn_row,
-            "Remove from map",
-            self._delete_token,
-            fg_color="#9f1239",
-            active_fg="#4c0519",
-        )
-        del_b.pack(side="left", padx=4)
-        ToolTip(del_b, HELP["delete_token"])
+            body = self._collapsible("Analysis tools (fp_gui)", "procedures", opened=False)
+            self._add_procedure_buttons(body)
+            self._end_section()
+
+            del_row = tk.Frame(inner, bg=THEME["panel_inner"])
+            del_row.pack(fill="x", padx=6, pady=(10, 14))
+            del_b = self._lib_btn(
+                del_row,
+                "Remove from map",
+                self._delete_token,
+                fg_color="#9f1239",
+                active_fg="#4c0519",
+            )
+            del_b.pack(side="left", padx=4)
+            ToolTip(del_b, HELP["delete_token"])
+        else:
+            self._inspector_sep()
+            btn_row = tk.Frame(inner, bg=THEME["panel_inner"])
+            btn_row.pack(fill="x", padx=6, pady=8)
+            apply_b = self._lib_btn(btn_row, "Apply", self._apply_sidebar)
+            apply_b.pack(side="left", padx=4)
+            ToolTip(apply_b, HELP["apply"])
+            if token.kind == "mlp":
+                ur_b = self._lib_btn(btn_row, "Refresh range rings", self._run_mlp_ranges)
+                ur_b.pack(side="left", padx=4)
+                ToolTip(ur_b, HELP["update_range"])
+            del_b = self._lib_btn(
+                btn_row,
+                "Remove from map",
+                self._delete_token,
+                fg_color="#9f1239",
+                active_fg="#4c0519",
+            )
+            del_b.pack(side="left", padx=4)
+            ToolTip(del_b, HELP["delete_token"])
 
     def _insp_check(self, parent, text, variable, tip, storage_key=None):
         row = tk.Frame(parent, bg=THEME["panel_inner"])
@@ -1433,7 +1874,7 @@ class MapApp:
             self.sidebar_vars[storage_key] = variable
 
     def _add_entry(self, label, value, field_id, tip=None):
-        frame = tk.Frame(self.scrollable.inner, bg=THEME["panel_inner"])
+        frame = tk.Frame(self._insp_container(), bg=THEME["panel_inner"])
         frame.pack(fill="x", padx=6, pady=3)
         tk.Label(
             frame,
@@ -1504,6 +1945,32 @@ class MapApp:
         self._left_panning = False
         self._left_pan_last = None
         self._b1_press_xy = (event.x, event.y)
+        self._token_press_moved = False
+
+        if self.drawing_launch_box_for is not None:
+            self._launch_box_start = (event.x, event.y)
+            if self._launch_box_rubber is not None:
+                self.map_canvas.delete(self._launch_box_rubber)
+            self._launch_box_rubber = self.map_canvas.create_rectangle(
+                event.x, event.y, event.x, event.y,
+                outline="#7c3aed", width=2, dash=(5, 4),
+            )
+            return
+
+        if self.placing_fixed_mlp_for is not None:
+            tid = self.placing_fixed_mlp_for
+            if tid in self.tokens:
+                lat, lon = self._xy_to_latlon(event.x, event.y)
+                tok = self.tokens[tid]
+                tok._mlp_btn_state = "placed"  # button becomes "place again or proceed"
+                self._select_token(tok)        # rebuild sidebar in placed state
+                self._set_fixed_mlp(tok, lat, lon)
+                self.status_var.set("Launch point placed — click map to replace, or press Proceed")
+                # stay armed so further map clicks re-place the point
+            else:
+                self.placing_fixed_mlp_for = None
+                self.map_canvas.configure(cursor="")
+            return
 
         if self.add_mode:
             lat, lon = self._xy_to_latlon(event.x, event.y)
@@ -1527,6 +1994,11 @@ class MapApp:
             self._handle_coverage_click(event)
             return
 
+        dot_token, dot = self._hit_test_threat_dot(event.x, event.y)
+        if dot is not None:
+            self._isolate_threat_dot(dot_token, dot)
+            return
+
         token_id, drag_tag = self._hit_test_map_token(event.x, event.y)
         if token_id is not None:
             self._select_token(self.tokens[token_id])
@@ -1538,6 +2010,14 @@ class MapApp:
         self._left_pan_last = (event.x, event.y)
 
     def _on_map_drag(self, event):
+        if self.drawing_launch_box_for is not None and self._launch_box_start is not None:
+            sx, sy = self._launch_box_start
+            self.map_canvas.coords(self._launch_box_rubber, sx, sy, event.x, event.y)
+            return
+        if self._b1_press_xy is not None:
+            px, py = self._b1_press_xy
+            if math.hypot(event.x - px, event.y - py) > 5:
+                self._token_press_moved = True
         if self.drag_state:
             token = self.tokens[self.drag_state["token_id"]]
             tag = self.drag_state["tag"]
@@ -1557,6 +2037,9 @@ class MapApp:
                 token.sector_width = clamp(abs(delta) * 2.0, 5.0, 180.0)
                 self._update_token_draw(token)
                 self._refresh_sidebar_token(token)
+            elif tag == "fixed_mlp":
+                lat, lon = self._xy_to_latlon(event.x, event.y)
+                self._set_fixed_mlp(token, lat, lon)
             return
 
         if not self._left_pan_armed or self._b1_press_xy is None:
@@ -1580,8 +2063,62 @@ class MapApp:
     def _on_map_button1_release(self, event):
         self.map_canvas.configure(cursor="")
 
+        if self.drawing_launch_box_for is not None:
+            tid = self.drawing_launch_box_for
+            start = self._launch_box_start
+            self._launch_box_start = None
+            if self._launch_box_rubber is not None:
+                self.map_canvas.delete(self._launch_box_rubber)
+                self._launch_box_rubber = None
+            self._b1_press_xy = None
+            if start is None or tid not in self.tokens:
+                self.drawing_launch_box_for = None
+                return
+            if math.hypot(event.x - start[0], event.y - start[1]) < 6:
+                self.status_var.set("Launch box too small — drag a larger rectangle")
+                return  # stay armed to try again
+            lat1, lon1 = self._xy_to_latlon(*start)
+            lat2, lon2 = self._xy_to_latlon(event.x, event.y)
+            tok = self.tokens[tid]
+            prev_firing = (getattr(tok, "launch_box", None) or {}).get("missile_keys")
+            tok._box_btn_state = "drawn"  # button becomes "draw again or proceed"
+            self._select_token(tok)        # rebuild sidebar in drawn state
+            tok.launch_box = {
+                "lat1": lat1, "lon1": lon1, "lat2": lat2, "lon2": lon2,
+                "missile_keys": prev_firing or list(tok.missile_keys),
+                "grid_n": (getattr(tok, "launch_box", None) or {}).get("grid_n", 3),
+            }
+            self._update_token_draw(tok)
+            self._show_launch_box_popup(tok)
+            self.status_var.set("Box drawn — drag again to redraw, choose firing missiles, then Proceed")
+            # stay armed so a further drag redraws the box
+            return
+
         if self.drag_state:
+            tid = self.drag_state["token_id"]
+            tag = self.drag_state["tag"]
+            moved = self._token_press_moved
             self.drag_state = None
+            if (
+                not moved
+                and tag == "token"
+                and tid in self.tokens
+            ):
+                tok = self.tokens[tid]
+                if tok.kind == "ilp" and self._ilp_has_footprint_popup(tok):
+                    self._show_footprint_layer_popup(tok)
+            elif moved and tag in ("dir_handle", "left_handle", "right_handle") and tid in self.tokens:
+                # Sector/boresight changed: recompute the footprint for the new sector.
+                tok = self.tokens[tid]
+                if tok.kind == "ilp":
+                    self._refresh_sidebar_token(tok)
+                    tok.isolated_azimuth = None
+                    tok.isolated_missile_key = None
+                    if tok.footprints:
+                        self.selected_token = tok
+                        self._run_footprint()
+                    else:
+                        self._update_token_draw(tok)
             return
 
         if self._left_pan_armed:
@@ -1713,7 +2250,7 @@ class MapApp:
         return None
 
     def _drag_tag_from_tags(self, tags):
-        for tag in ("dir_handle", "left_handle", "right_handle", "token"):
+        for tag in ("dir_handle", "left_handle", "right_handle", "fixed_mlp", "token"):
             if tag in tags:
                 return tag
         return "token"
@@ -1747,6 +2284,8 @@ class MapApp:
         self._select_token(token)
 
     def _select_token(self, token):
+        if token is not self.selected_token:
+            self._destroy_footprint_layer_popup()
         self.selected_token = token
         self._build_sidebar(token)
         for tok in self.tokens.values():
@@ -1830,7 +2369,14 @@ class MapApp:
         self._update_handle(token, "left_handle", left_xy, token.show_sector, "left_handle")
         self._update_handle(token, "right_handle", right_xy, token.show_sector, "right_handle")
 
-        self._draw_footprint(token)
+        # Draw each overlay independently: a failure rendering one (e.g. a complex
+        # footprint polygon) must not abort the others, or the threat-origin dots would
+        # silently freeze (Tk swallows the exception) and stop tracking the sector.
+        for _draw in (self._draw_footprint, self._draw_threat_arc, self._draw_fixed_mlp, self._draw_launch_box, self._draw_calc_mode_box):
+            try:
+                _draw(token)
+            except Exception as exc:
+                self._safe_status_update(f"{_draw.__name__} error: {exc}")
 
     def _update_line_item(self, token, key, x1, y1, x2, y2, show, color):
         token_tag = f"token:{token.token_id}"
@@ -1915,14 +2461,201 @@ class MapApp:
             segments.append(current)
         return segments if segments else [points]
 
+    def _sync_footprint_ids_and_visibility(self, token, reset_visibility=False):
+        """Assign stable fp_id to each footprint entry; optionally reset layer visibility."""
+        fps = token.footprints or []
+        for i, fp in enumerate(fps):
+            fp["fp_id"] = i
+        if reset_visibility:
+            token.footprint_visibility = {i: True for i in range(len(fps))}
+        else:
+            prev = getattr(token, "footprint_visibility", None) or {}
+            token.footprint_visibility = {i: bool(prev.get(i, True)) for i in range(len(fps))}
+        self._persist_active_footprint_state(token)
+
+    def _iter_footprint_calc_modes(self, token):
+        calcs = getattr(token, "footprint_calculations", None) or {}
+        ordered = [m for m in FOOTPRINT_CALC_MODES if m in calcs]
+        for mode_id in calcs:
+            if mode_id not in ordered:
+                ordered.append(mode_id)
+        return [(mode_id, calcs[mode_id]) for mode_id in ordered]
+
+    def _ilp_has_footprint_popup(self, token):
+        calcs = getattr(token, "footprint_calculations", None) or {}
+        if len(calcs) > 1:
+            return True
+        return len(token.footprints or []) > 1
+
+    def _apply_active_footprint_mode(self, token):
+        mode_id = getattr(token, "active_footprint_mode", None)
+        calcs = getattr(token, "footprint_calculations", None) or {}
+        if mode_id and mode_id in calcs:
+            entry = calcs[mode_id]
+            token.footprints = entry.get("footprints") or []
+            token.footprint_visibility = dict(entry.get("footprint_visibility") or {})
+            token.from_mlp_mode = bool(entry.get("from_mlp_mode", False))
+            token.full_sector_mode = bool(entry.get("full_sector_mode", False))
+        elif not calcs:
+            token.footprints = []
+            token.footprint_visibility = {}
+            token.from_mlp_mode = False
+            token.full_sector_mode = False
+
+    def _persist_active_footprint_state(self, token):
+        mode_id = getattr(token, "active_footprint_mode", None)
+        calcs = getattr(token, "footprint_calculations", None) or {}
+        if not mode_id or mode_id not in calcs:
+            return
+        entry = calcs[mode_id]
+        entry["footprints"] = token.footprints
+        entry["footprint_visibility"] = dict(token.footprint_visibility)
+        entry["from_mlp_mode"] = bool(token.from_mlp_mode)
+        entry["full_sector_mode"] = bool(token.full_sector_mode)
+
+    def _store_footprint_calculation(self, token, mode_id, footprints, *, from_mlp_mode=False, full_sector_mode=False, label=None):
+        if not hasattr(token, "footprint_calculations") or token.footprint_calculations is None:
+            token.footprint_calculations = {}
+        entry_label = label or FOOTPRINT_CALC_MODES.get(mode_id, mode_id.replace("_", " ").title())
+        token.footprint_calculations[mode_id] = {
+            "label": entry_label,
+            "det_label": self._footprint_det_label(token),
+            "footprints": footprints,
+            "footprint_visibility": {i: True for i in range(len(footprints))},
+            "from_mlp_mode": bool(from_mlp_mode),
+            "full_sector_mode": bool(full_sector_mode),
+        }
+        token.active_footprint_mode = mode_id
+        self._apply_active_footprint_mode(token)
+
+    def _switch_footprint_mode(self, token, mode_id):
+        calcs = getattr(token, "footprint_calculations", None) or {}
+        if mode_id not in calcs:
+            return
+        self._persist_active_footprint_state(token)
+        token.active_footprint_mode = mode_id
+        self._apply_active_footprint_mode(token)
+        self._sync_footprint_ids_and_visibility(token, reset_visibility=False)
+        self._update_token_draw(token)
+
+    def _footprint_det_label(self, token):
+        """Short label describing which detection cueing mode is active for footprints."""
+        if token.use_det_range_override and token.det_range_override_km > 0:
+            return f"Fixed det {token.det_range_override_km:g}km"
+        if token.use_space_based_delay:
+            return "Space-based"
+        return "Native det"
+
+    def _on_calc_mode_box_click(self, token, mode_id):
+        self._switch_footprint_mode(token, mode_id)  # also redraws (rebuilds this box)
+
+    def _draw_calc_mode_box(self, token):
+        """Constant little box on the map, just north of the ILP, to switch calculation mode."""
+        win_key = "calc_mode_win"
+        modes = self._iter_footprint_calc_modes(token) if token.kind == "ilp" else []
+
+        def _remove():
+            if win_key in token.canvas_items:
+                try:
+                    self.map_canvas.delete(token.canvas_items[win_key])
+                except tk.TclError:
+                    pass
+                del token.canvas_items[win_key]
+            fr = getattr(token, "_calc_mode_frame", None)
+            if fr is not None:
+                try:
+                    fr.destroy()
+                except tk.TclError:
+                    pass
+            token._calc_mode_frame = None
+            token._calc_mode_sig = None
+
+        if len(modes) < 2:
+            _remove()
+            return
+
+        active = getattr(token, "active_footprint_mode", None) or modes[0][0]
+        sig = (tuple(m for m, _ in modes), active)
+        x, y = self._latlon_to_xy(token.lat, token.lon)
+        off = getattr(token, "_calc_mode_offset", None) or (0, -20)
+        px, py = x + off[0], y + off[1]
+
+        if getattr(token, "_calc_mode_sig", None) != sig or win_key not in token.canvas_items:
+            _remove()
+            fr = tk.Frame(self.map_canvas, bg=THEME["titlebar"],
+                          highlightthickness=1, highlightbackground=THEME["accent"])
+            grip = tk.Label(fr, text="⠿ Calculation mode", bg=THEME["titlebar"], fg=THEME["fg_muted"],
+                            font=("TkDefaultFont", 8, "bold"), cursor="fleur")
+            grip.pack(fill="x", padx=6, pady=(3, 1))
+            grip.bind("<ButtonPress-1>", lambda e, t=token: self._calc_box_drag_start(t, e))
+            grip.bind("<B1-Motion>", lambda e, t=token: self._calc_box_drag_move(t, e))
+            for mode_id, entry in modes:
+                is_active = (mode_id == active)
+                n = len(entry.get("footprints") or [])
+                det_note = entry.get("det_label") or ""
+                label = (("● " if is_active else "○ ") + str(entry.get("label", mode_id))
+                         + (f"  ({n})" if n else ""))
+                if det_note:
+                    label += f" · {det_note}"
+                btn = tk.Button(
+                    fr, text=label,
+                    command=lambda mid=mode_id: self._on_calc_mode_box_click(token, mid),
+                    bg=(THEME["accent"] if is_active else THEME["tool_btn_bg"]),
+                    fg=("#ffffff" if is_active else THEME["tool_btn_fg"]),
+                    activebackground=THEME["accent_dim"], activeforeground="#ffffff",
+                    relief="flat", borderwidth=0, padx=8, pady=2, cursor="hand2",
+                    anchor="w", font=("TkDefaultFont", 8, "bold"), highlightthickness=0,
+                )
+                btn.pack(fill="x", padx=4, pady=1)
+            tk.Frame(fr, bg=THEME["titlebar"], height=3).pack()
+            token.canvas_items[win_key] = self.map_canvas.create_window(
+                px, py, window=fr, anchor="s", tags=(f"token:{token.token_id}",))
+            token._calc_mode_frame = fr
+            token._calc_mode_sig = sig
+        else:
+            self.map_canvas.coords(token.canvas_items[win_key], px, py)
+        try:
+            self.map_canvas.tag_raise(token.canvas_items[win_key])
+        except tk.TclError:
+            pass
+
+    def _calc_box_drag_start(self, token, event):
+        win = token.canvas_items.get("calc_mode_win")
+        if win is None:
+            return
+        coords = self.map_canvas.coords(win)
+        mx = event.x_root - self.map_canvas.winfo_rootx()
+        my = event.y_root - self.map_canvas.winfo_rooty()
+        self._calc_box_drag = {"dx": coords[0] - mx, "dy": coords[1] - my}
+
+    def _calc_box_drag_move(self, token, event):
+        win = token.canvas_items.get("calc_mode_win")
+        if win is None or not hasattr(self, "_calc_box_drag"):
+            return
+        mx = event.x_root - self.map_canvas.winfo_rootx()
+        my = event.y_root - self.map_canvas.winfo_rooty()
+        nx = mx + self._calc_box_drag["dx"]
+        ny = my + self._calc_box_drag["dy"]
+        ilp_x, ilp_y = self._latlon_to_xy(token.lat, token.lon)
+        token._calc_mode_offset = (nx - ilp_x, ny - ilp_y)  # follows the ILP on pan/zoom
+        self.map_canvas.coords(win, nx, ny)
+
+    def _fp_layer_visible(self, token, fp_id):
+        return token.footprint_visibility.get(fp_id, True)
+
     def _draw_footprint(self, token):
         existing_keys = {k for k in token.canvas_items if k.startswith("footprint:")}
         active_keys = set()
         label_keys = {k for k in token.canvas_items if k.startswith("footprint_label:")}
 
-        for fp in token.footprints:
+        for fp_idx, fp in enumerate(token.footprints):
+            fp_id = int(fp.get("fp_id", fp_idx))
+            vis = self._fp_layer_visible(token, fp_id)
             latlon_points = []
-            theta = math.radians(token.center_dir)
+            # A footprint may carry its own boresight (full-sector layers / already-rotated
+            # intersection regions); otherwise it follows the token's effective direction.
+            fp_bs = fp.get("boresight")
+            theta = math.radians(fp_bs if fp_bs is not None else self._effective_center_dir(token))
             for x_local, y_local in fp["points"]:
                 east = x_local * math.cos(theta) + y_local * math.sin(theta)
                 north = -x_local * math.sin(theta) + y_local * math.cos(theta)
@@ -1931,14 +2664,14 @@ class MapApp:
             segments = self._split_latlon_at_dateline(latlon_points)
 
             token_tag = f"token:{token.token_id}"
-            label = fp.get("label", "")
             for seg_idx, seg in enumerate(segments):
                 points = []
                 for lat, lon in seg:
                     px, py = self._latlon_to_xy(lat, lon)
                     points.extend([px, py])
-                key = f"footprint:{fp['missile_key']}:{label}:{seg_idx}"
+                key = f"footprint:{fp_id}:{seg_idx}"
                 active_keys.add(key)
+                poly_state = "normal" if vis else "hidden"
                 if key not in token.canvas_items:
                     token.canvas_items[key] = self.map_canvas.create_polygon(
                         points,
@@ -1947,15 +2680,21 @@ class MapApp:
                         width=2,
                         dash=(4, 3),
                         joinstyle="round",
+                        state=poly_state,
                         tags=(token_tag,),
                     )
                 else:
                     self.map_canvas.coords(token.canvas_items[key], *points)
-                    self.map_canvas.itemconfigure(token.canvas_items[key], state="normal", outline=fp["color"])
+                    self.map_canvas.itemconfigure(
+                        token.canvas_items[key],
+                        state=poly_state,
+                        outline=fp["color"],
+                    )
 
-            label_key = f"footprint_label:{fp['missile_key']}:{label}"
+            label_key = f"footprint_label:{fp_id}"
             label_keys.discard(label_key)
             display_label = fp.get("label") or self._missile_label(fp["missile_key"])
+            lbl_state = "normal" if vis else "hidden"
             if points:
                 label_x = points[0]
                 label_y = points[1]
@@ -1967,11 +2706,17 @@ class MapApp:
                         anchor="nw",
                         fill=fp["color"],
                         font=("Helvetica", 8),
+                        state=lbl_state,
                         tags=(token_tag,)
                     )
                 else:
                     self.map_canvas.coords(token.canvas_items[label_key], label_x + 6, label_y + 6)
-                    self.map_canvas.itemconfigure(token.canvas_items[label_key], text=display_label, fill=fp["color"], state="normal")
+                    self.map_canvas.itemconfigure(
+                        token.canvas_items[label_key],
+                        text=display_label,
+                        fill=fp["color"],
+                        state=lbl_state,
+                    )
 
         for key in existing_keys - active_keys:
             self.map_canvas.delete(token.canvas_items[key])
@@ -1980,6 +2725,281 @@ class MapApp:
         for key in label_keys:
             self.map_canvas.delete(token.canvas_items[key])
             del token.canvas_items[key]
+
+    # ------------------------------------------------------------------ #
+    # Threat-origin sampling arc                                          #
+    # ------------------------------------------------------------------ #
+    def _effective_center_dir(self, token):
+        """Azimuth used to orient the footprint: the isolated launch point if one
+        is selected, otherwise the sector boresight."""
+        if getattr(token, "isolated_azimuth", None) is not None:
+            return token.isolated_azimuth
+        return token.center_dir
+
+    def _cached_missile_range_km(self, token, m_key):
+        """Threat missile range in km, honoring a per-site range override, cached
+        so dragging/panning does not re-run the trajectory sim every frame."""
+        if getattr(token, "use_range_override", False) and getattr(token, "range_override_km", 0) > 0:
+            return float(token.range_override_km)
+        if m_key in self._missile_range_cache:
+            return self._missile_range_cache[m_key]
+        range_km = self._get_missile_range_km(m_key)
+        if range_km is not None:
+            self._missile_range_cache[m_key] = range_km
+        return range_km
+
+    def _threat_arc_azimuths(self, token):
+        """Sampled azimuths (deg) spanning the sector, centered on the boresight."""
+        n = max(2, int(getattr(token, "threat_arc_samples", 9)))
+        half = token.sector_width / 2.0
+        start = token.center_dir - half
+        step = token.sector_width / (n - 1)
+        return [(start + step * i) % 360.0 for i in range(n)]
+
+    def _draw_threat_arc(self, token):
+        """Draw the curved sampling line of threat launch points as dots."""
+        dot_keys = {k for k in token.canvas_items if k.startswith("threat_dot:")}
+        line_keys = {k for k in token.canvas_items if k.startswith("threat_arc:")}
+        token.threat_arc_dots = []
+
+        if token.kind != "ilp" or not getattr(token, "show_threat_arc", True):
+            for key in dot_keys | line_keys:
+                self.map_canvas.delete(token.canvas_items[key])
+                del token.canvas_items[key]
+            return
+
+        token_tag = f"token:{token.token_id}"
+        azimuths = self._threat_arc_azimuths(token)
+        iso_az = getattr(token, "isolated_azimuth", None)
+        iso_mk = getattr(token, "isolated_missile_key", None)
+        active_dot = set()
+        active_line = set()
+
+        for m_idx, m_key in enumerate(token.missile_keys):
+            range_km = self._cached_missile_range_km(token, m_key)
+            if not range_km:
+                continue
+            arc_latlon = []
+            for a_idx, az in enumerate(azimuths):
+                lat, lon = self._destination_latlon(token.lat, token.lon, az, range_km)
+                arc_latlon.append((lat, lon))
+                px, py = self._latlon_to_xy(lat, lon)
+                is_iso = (iso_az is not None
+                          and iso_mk == m_key
+                          and abs(self._angle_diff(az, iso_az)) < 0.5)
+                r = 6 if is_iso else 4
+                outline = "#0f172a"
+                fill = "#f97316" if is_iso else "#fbbf24"
+                width = 3 if is_iso else 1
+                key = f"threat_dot:{m_key}:{a_idx}"
+                active_dot.add(key)
+                if key not in token.canvas_items:
+                    token.canvas_items[key] = self.map_canvas.create_oval(
+                        px - r, py - r, px + r, py + r,
+                        fill=fill, outline=outline, width=width,
+                        tags=(token_tag, "threat_dot"),
+                    )
+                else:
+                    self.map_canvas.coords(token.canvas_items[key], px - r, py - r, px + r, py + r)
+                    self.map_canvas.itemconfigure(
+                        token.canvas_items[key], fill=fill, outline=outline, width=width, state="normal"
+                    )
+                token.threat_arc_dots.append({
+                    "item": token.canvas_items[key],
+                    "azimuth": az,
+                    "missile_key": m_key,
+                    "lat": lat,
+                    "lon": lon,
+                })
+
+            # thin curved line connecting the sampled launch points
+            for seg_idx, seg in enumerate(self._split_latlon_at_dateline(arc_latlon)
+                                          if len(arc_latlon) >= 3 else [arc_latlon]):
+                pts = []
+                for lat, lon in seg:
+                    px, py = self._latlon_to_xy(lat, lon)
+                    pts.extend([px, py])
+                if len(pts) < 4:
+                    continue
+                key = f"threat_arc:{m_key}:{seg_idx}"
+                active_line.add(key)
+                if key not in token.canvas_items:
+                    token.canvas_items[key] = self.map_canvas.create_line(
+                        *pts, fill="#fbbf24", width=1, dash=(2, 3), tags=(token_tag,)
+                    )
+                else:
+                    self.map_canvas.coords(token.canvas_items[key], *pts)
+                    self.map_canvas.itemconfigure(token.canvas_items[key], state="normal")
+
+        for key in dot_keys - active_dot:
+            self.map_canvas.delete(token.canvas_items[key])
+            del token.canvas_items[key]
+        for key in line_keys - active_line:
+            self.map_canvas.delete(token.canvas_items[key])
+            del token.canvas_items[key]
+
+        # keep dots on top of footprint polygons so they stay clickable
+        self.map_canvas.tag_raise("threat_dot")
+
+    def _hit_test_threat_dot(self, x, y):
+        """Return (token, dot) for the threat-origin dot nearest (x, y), or (None, None).
+
+        Picks the closest dot center rather than the first match so that clustered
+        dots (short-range threats / zoomed-out map) still resolve to one the user aimed at.
+        """
+        items = set(self.map_canvas.find_overlapping(x - 6, y - 6, x + 6, y + 6))
+        best = (None, None)
+        best_d2 = None
+        for token in self.tokens.values():
+            if token.kind != "ilp":
+                continue
+            for dot in getattr(token, "threat_arc_dots", []):
+                if dot["item"] not in items:
+                    continue
+                dx, dy = self._latlon_to_xy(dot["lat"], dot["lon"])
+                d2 = (dx - x) ** 2 + (dy - y) ** 2
+                if best_d2 is None or d2 < best_d2:
+                    best_d2 = d2
+                    best = (token, dot)
+        return best
+
+    def _isolate_threat_dot(self, token, dot):
+        """Isolate a single launch point (toggle off if it is already isolated)."""
+        already = (
+            getattr(token, "isolated_azimuth", None) is not None
+            and token.isolated_missile_key == dot["missile_key"]
+            and abs(self._angle_diff(dot["azimuth"], token.isolated_azimuth)) < 0.5
+        )
+        if already:
+            self._clear_isolation(token)
+            return
+        token.isolated_azimuth = dot["azimuth"]
+        token.isolated_missile_key = dot["missile_key"]
+        # Treat the isolated dot as a single fixed launch point: use the
+        # from-launch-point solver (per-target range), oriented at the dot's azimuth.
+        token._saved_mlp_latlon = getattr(token, "fixed_mlp_latlon", None)
+        token.fixed_mlp_latlon = (dot["lat"], dot["lon"])
+        token.center_dir = dot["azimuth"]
+        self._select_token(token)
+        self.status_var.set(
+            f"Isolated launch point: az {dot['azimuth']:.1f}° · missile #{dot['missile_key']} (from-launch-point)"
+        )
+        self._apply_sidebar()
+        thread = threading.Thread(target=self._compute_and_render, args=(token,), kwargs={"from_mlp": True})
+        thread.daemon = True
+        thread.start()
+
+    def _clear_isolation(self, token, recompute=True):
+        if getattr(token, "isolated_azimuth", None) is None:
+            return
+        token.isolated_azimuth = None
+        token.isolated_missile_key = None
+        # restore any launch point that existed before the dot was isolated
+        token.fixed_mlp_latlon = getattr(token, "_saved_mlp_latlon", None)
+        token._saved_mlp_latlon = None
+        if recompute and token.footprints:
+            self.status_var.set("Restored full-sector footprint")
+            self._run_footprint()
+        else:
+            self._update_token_draw(token)
+
+    def _draw_launch_box(self, token):
+        """Draw the launch-sampling box (dotted) and its sampled MLP dots."""
+        keys = {k for k in token.canvas_items if k.startswith("launch_box")}
+        box = getattr(token, "launch_box", None)
+        if token.kind != "ilp" or not box:
+            for k in keys:
+                self.map_canvas.delete(token.canvas_items[k])
+                del token.canvas_items[k]
+            return
+        token_tag = f"token:{token.token_id}"
+        # corners -> screen
+        corners = [(box["lat1"], box["lon1"]), (box["lat1"], box["lon2"]),
+                   (box["lat2"], box["lon2"]), (box["lat2"], box["lon1"])]
+        pts = []
+        for lat, lon in corners:
+            x, y = self._latlon_to_xy(lat, lon)
+            pts.extend([x, y])
+        bk = "launch_box_rect"
+        if bk not in token.canvas_items:
+            token.canvas_items[bk] = self.map_canvas.create_polygon(
+                pts, outline="#7c3aed", fill="", width=2, dash=(5, 4), tags=(token_tag,))
+        else:
+            self.map_canvas.coords(token.canvas_items[bk], *pts)
+            self.map_canvas.itemconfigure(token.canvas_items[bk], state="normal")
+        # sampled MLP dots
+        active = {bk}
+        for i, (mlat, mlon) in enumerate(self._launch_box_samples(box)):
+            x, y = self._latlon_to_xy(mlat, mlon)
+            k = f"launch_box_dot:{i}"
+            active.add(k)
+            if k not in token.canvas_items:
+                token.canvas_items[k] = self.map_canvas.create_oval(
+                    x - 3, y - 3, x + 3, y + 3, fill="#a78bfa", outline="#4c1d95",
+                    width=1, tags=(token_tag,))
+            else:
+                self.map_canvas.coords(token.canvas_items[k], x - 3, y - 3, x + 3, y + 3)
+                self.map_canvas.itemconfigure(token.canvas_items[k], state="normal")
+        for k in keys - active:
+            self.map_canvas.delete(token.canvas_items[k])
+            del token.canvas_items[k]
+
+    def _launch_box_samples(self, box):
+        """Grid of (lat, lon) launch points sampled inside the box."""
+        n = max(1, int(box.get("grid_n", 3)))
+        lat1, lat2 = box["lat1"], box["lat2"]
+        lon1, lon2 = box["lon1"], box["lon2"]
+        out = []
+        for i in range(n):
+            fi = 0.5 if n == 1 else i / (n - 1)
+            lat = lat1 + (lat2 - lat1) * fi
+            for j in range(n):
+                fj = 0.5 if n == 1 else j / (n - 1)
+                lon = lon1 + (lon2 - lon1) * fj
+                out.append((lat, lon))
+        return out
+
+    def _draw_fixed_mlp(self, token):
+        """Draw the placed fixed launch point as an opaque yellow, draggable dot."""
+        keys = {k for k in token.canvas_items if k.startswith("fixed_mlp")}
+        latlon = getattr(token, "fixed_mlp_latlon", None)
+        if token.kind != "ilp" or not latlon:
+            for k in keys:
+                self.map_canvas.delete(token.canvas_items[k])
+                del token.canvas_items[k]
+            return
+        token_tag = f"token:{token.token_id}"
+        mlp_x, mlp_y = self._latlon_to_xy(*latlon)
+        ilp_x, ilp_y = self._latlon_to_xy(token.lat, token.lon)
+        # connector line ILP -> MLP
+        lk = "fixed_mlp_line"
+        if lk not in token.canvas_items:
+            token.canvas_items[lk] = self.map_canvas.create_line(
+                ilp_x, ilp_y, mlp_x, mlp_y, fill="#eab308", width=1, dash=(4, 3), tags=(token_tag,)
+            )
+        else:
+            self.map_canvas.coords(token.canvas_items[lk], ilp_x, ilp_y, mlp_x, mlp_y)
+            self.map_canvas.itemconfigure(token.canvas_items[lk], state="normal")
+        r = 8
+        dk = "fixed_mlp_dot"
+        if dk not in token.canvas_items:
+            token.canvas_items[dk] = self.map_canvas.create_oval(
+                mlp_x - r, mlp_y - r, mlp_x + r, mlp_y + r,
+                fill="#facc15", outline="#1f2937", width=2, tags=(token_tag, "fixed_mlp"),
+            )
+        else:
+            self.map_canvas.coords(token.canvas_items[dk], mlp_x - r, mlp_y - r, mlp_x + r, mlp_y + r)
+            self.map_canvas.itemconfigure(token.canvas_items[dk], state="normal")
+        tk_ = "fixed_mlp_label"
+        if tk_ not in token.canvas_items:
+            token.canvas_items[tk_] = self.map_canvas.create_text(
+                mlp_x + 11, mlp_y - 11, text="launch pt", anchor="w",
+                fill="#854d0e", font=("Helvetica", 8, "bold"), tags=(token_tag, "fixed_mlp"),
+            )
+        else:
+            self.map_canvas.coords(token.canvas_items[tk_], mlp_x + 11, mlp_y - 11)
+            self.map_canvas.itemconfigure(token.canvas_items[tk_], state="normal")
+        self.map_canvas.tag_raise("fixed_mlp")
 
     def _draw_mlp_ranges(self, token):
         existing_keys = {k for k in token.canvas_items if k.startswith("mlp_range:")}
@@ -2042,10 +3062,456 @@ class MapApp:
         if token is None:
             return
         self._apply_sidebar()
-        self.status_var.set("Computing footprint...")
+        det_note = self._footprint_det_label(token)
+        self.status_var.set(f"Computing footprint ({det_note})...")
         thread = threading.Thread(target=self._compute_and_render, args=(token,))
         thread.daemon = True
         thread.start()
+
+    def _run_footprint_from_mlp(self):
+        token = self.selected_token
+        if token is None or token.kind != "ilp":
+            return
+        self._apply_sidebar()
+        if not getattr(token, "fixed_mlp_latlon", None):
+            self.status_var.set("Place a launch point first (Set launch point, then click the map)")
+            return
+        # Orient the footprint/boresight toward the launch point it is computed against.
+        mlp_lat, mlp_lon = token.fixed_mlp_latlon
+        token.center_dir = self._bearing_between(token.lat, token.lon, mlp_lat, mlp_lon)
+        token.isolated_azimuth = None
+        token.isolated_missile_key = None
+        self._refresh_sidebar_token(token)
+        self.status_var.set("Computing footprint from launch point...")
+        thread = threading.Thread(target=self._compute_and_render, args=(token,), kwargs={"from_mlp": True})
+        thread.daemon = True
+        thread.start()
+
+    def _run_footprint_from_ranges(self):
+        token = self.selected_token
+        if token is None or token.kind != "ilp":
+            return
+        self._apply_sidebar()
+        if not token.missile_keys:
+            self.status_var.set("Select at least one threat missile first")
+            return
+        # Each missile's launch point is the central (boresight) dot on its own max-range
+        # arc, so footprints stay oriented along the boresight.
+        token.isolated_azimuth = None
+        token.isolated_missile_key = None
+        self.status_var.set("Computing footprints from each missile's max range...")
+        thread = threading.Thread(target=self._compute_and_render, args=(token,), kwargs={"from_ranges": True})
+        thread.daemon = True
+        thread.start()
+
+    def _run_footprint_full_sector(self):
+        token = self.selected_token
+        if token is None or token.kind != "ilp":
+            return
+        self._apply_sidebar()
+        if not token.missile_keys:
+            self.status_var.set("Select at least one threat missile first")
+            return
+        token.isolated_azimuth = None
+        token.isolated_missile_key = None
+        self.status_var.set("Computing All-Max-Distances footprints across the sector...")
+        thread = threading.Thread(target=self._compute_and_render_full_sector, args=(token,))
+        thread.daemon = True
+        thread.start()
+
+    def _compute_and_render_full_sector(self, token):
+        """The standard (classic, max-range-everywhere) footprint fanned across a set of
+        boresights spanning the sector. The classic shape is rotationally symmetric
+        (independent of boresight, absent ground radars), so it is computed once per
+        missile/interceptor and layered at each boresight azimuth (count = Threat dots
+        per sector)."""
+        try:
+            footprints = []
+            colors = ["red", "blue", "green", "orange", "purple", "brown", "cyan", "magenta"]
+            interceptor_keys = token.interceptor_keys[:] if token.interceptor_keys else [int(token.config.get("itype", 11))]
+            azimuths = self._threat_arc_azimuths(token)
+            layer = 0
+            for idx, m_key in enumerate(token.missile_keys):
+                m_label = self._missile_label(m_key)
+                for i_idx, i_key in enumerate(interceptor_keys):
+                    i_label = self._interceptor_label(i_key)
+                    # classic footprint (from_mlp=False): max-range threat to every target
+                    xy = self._calculate_footprint_xy(token, m_key, i_type_override=i_key)
+                    if not xy:
+                        continue
+                    pts = footprint_xy_to_meters(xy)
+                    for b_idx, az in enumerate(azimuths):
+                        footprints.append({
+                            "missile_key": m_key,
+                            "i_key": i_key,
+                            "boresight": az,
+                            "label": f"BS {az:.0f}° · {m_label} · {i_label}",
+                            "color": colors[layer % len(colors)],
+                            "points": pts,
+                        })
+                        layer += 1
+            self._store_footprint_calculation(
+                token, "full_sector", footprints,
+                from_mlp_mode=False, full_sector_mode=True,
+            )
+        except Exception as exc:
+            self._safe_status_update(f"Error: {exc}")
+            return
+        if not token.footprints:
+            self.root.after(0, lambda: self._finish_footprint(token, "No footprint found for current settings"))
+            return
+        self.root.after(0, lambda: self._finish_footprint(token, f"Full-sector footprints: {len(token.footprints)} layers"))
+
+    def _show_100pct_interceptable(self):
+        token = self.selected_token
+        if token is None or token.kind != "ilp":
+            return
+        full_entry = (getattr(token, "footprint_calculations", None) or {}).get("full_sector")
+        if not full_entry or not full_entry.get("footprints"):
+            self.status_var.set("Run 'All Max Distances, Full Sector' first")
+            return
+        self.status_var.set("Computing 100%-interceptable region(s)...")
+        thread = threading.Thread(target=self._compute_100pct, args=(token, list(full_entry["footprints"])))
+        thread.daemon = True
+        thread.start()
+
+    def _compute_100pct(self, token, full_fps):
+        try:
+            # group the full-sector layers by missile + interceptor
+            groups = {}
+            for fp in full_fps:
+                groups.setdefault((fp["missile_key"], fp.get("i_key")), []).append(fp)
+            colors = ["red", "blue", "green", "orange", "purple", "brown", "cyan", "magenta"]
+            new_fps = []
+            for gi, (key, fps) in enumerate(groups.items()):
+                # transform each boresight footprint into the common east/north frame
+                polys = []
+                for fp in fps:
+                    a = math.radians(fp.get("boresight", 0.0))
+                    ca, sa = math.cos(a), math.sin(a)
+                    polys.append([(x * ca + y * sa, -x * sa + y * ca) for x, y in fp["points"]])
+                region = self._polygon_intersection_region(polys)
+                if region:
+                    m_label = self._missile_label(key[0])
+                    i_label = self._interceptor_label(key[1]) if key[1] is not None else ""
+                    new_fps.append({
+                        "missile_key": key[0],
+                        "i_key": key[1],
+                        "boresight": 0.0,  # already in east/north
+                        "label": f"100% defended · {m_label} · {i_label}",
+                        "color": colors[gi % len(colors)],
+                        "points": region,
+                    })
+            self._store_footprint_calculation(
+                token, "pct100", new_fps,
+                from_mlp_mode=False, full_sector_mode=False,
+            )
+        except Exception as exc:
+            self._safe_status_update(f"Error: {exc}")
+            return
+        if not token.footprints:
+            self.root.after(0, lambda: self._finish_footprint(token, "No region defended across 100% of boresights"))
+            return
+        self.root.after(0, lambda: self._finish_footprint(token, "Showing 100%-interceptable region(s)"))
+
+    def _polygon_intersection_region(self, polys, n_grid=120, n_rays=120):
+        """Intersection of several polygons (east/north metres). Rasterises the
+        intersection onto a grid once, then traces a star-shaped boundary (list of
+        (e, n)) from the intersection centroid against that grid, or returns []."""
+        if not polys:
+            return []
+        es = [p[0] for poly in polys for p in poly]
+        ns = [p[1] for poly in polys for p in poly]
+        emin, emax, nmin, nmax = min(es), max(es), min(ns), max(ns)
+        if emax - emin < 1.0 or nmax - nmin < 1.0:
+            return []
+        de = (emax - emin) / n_grid
+        dn = (nmax - nmin) / n_grid
+        grid = [[False] * (n_grid + 1) for _ in range(n_grid + 1)]
+        sum_e = sum_n = 0.0
+        count = 0
+        for i in range(n_grid + 1):
+            e = emin + i * de
+            for j in range(n_grid + 1):
+                n = nmin + j * dn
+                if all(self._point_in_polygon(e, n, poly) for poly in polys):
+                    grid[i][j] = True
+                    sum_e += e
+                    sum_n += n
+                    count += 1
+        if not count:
+            return []
+        cx = sum_e / count
+        cy = sum_n / count
+
+        def in_grid(e, n):
+            i = int(round((e - emin) / de))
+            j = int(round((n - nmin) / dn))
+            if 0 <= i <= n_grid and 0 <= j <= n_grid:
+                return grid[i][j]
+            return False
+
+        step = min(de, dn)
+        max_r = math.hypot(emax - emin, nmax - nmin)
+        boundary = []
+        for k in range(n_rays):
+            ang = 2.0 * math.pi * k / n_rays
+            dx, dy = math.cos(ang), math.sin(ang)
+            r = 0.0
+            last = (cx, cy)
+            while r <= max_r:
+                e = cx + dx * r
+                n = cy + dy * r
+                if not in_grid(e, n):
+                    break
+                last = (e, n)
+                r += step
+            boundary.append(last)
+        return boundary
+
+    def _mlp_button_action(self, token):
+        """Single stateful button: idle -> arm placement -> (place) -> proceed/compute."""
+        self._apply_sidebar()
+        state = getattr(token, "_mlp_btn_state", "idle")
+        if state == "idle":
+            token._mlp_btn_state = "placing"
+            self.placing_fixed_mlp_for = token.token_id
+            self.drawing_launch_box_for = None
+            self.add_mode = None
+            self.map_canvas.configure(cursor="crosshair")
+            self.status_var.set("Click the map to place the launch point")
+            self._build_sidebar(token)
+        elif state == "placing":
+            token._mlp_btn_state = "idle"
+            self.placing_fixed_mlp_for = None
+            self.map_canvas.configure(cursor="")
+            self.status_var.set("Placement cancelled")
+            self._build_sidebar(token)
+        else:  # placed -> proceed
+            token._mlp_btn_state = "idle"
+            self.placing_fixed_mlp_for = None
+            self.map_canvas.configure(cursor="")
+            self._build_sidebar(token)
+            self._run_footprint_from_mlp()
+
+    def _box_button_action(self, token):
+        """Single stateful button: idle -> arm box draw -> (draw) -> proceed/compute."""
+        self._apply_sidebar()
+        if not token.missile_keys:
+            self.status_var.set("Select at least one threat missile first")
+            return
+        state = getattr(token, "_box_btn_state", "idle")
+        if state == "idle":
+            token._box_btn_state = "drawing"
+            self.drawing_launch_box_for = token.token_id
+            self.placing_fixed_mlp_for = None
+            self.add_mode = None
+            self.map_canvas.configure(cursor="crosshair")
+            self.status_var.set("Drag a box on the map to sample launch points")
+            self._build_sidebar(token)
+        elif state == "drawing":
+            token._box_btn_state = "idle"
+            self.drawing_launch_box_for = None
+            self.map_canvas.configure(cursor="")
+            self.status_var.set("Box drawing cancelled")
+            self._build_sidebar(token)
+        else:  # drawn -> proceed
+            token._box_btn_state = "idle"
+            self.drawing_launch_box_for = None
+            self.map_canvas.configure(cursor="")
+            self._build_sidebar(token)
+            if not getattr(token, "launch_box", None):
+                self.status_var.set("No launch box to compute")
+                return
+            self.status_var.set("Computing launch-box footprints...")
+            t = threading.Thread(target=self._compute_launch_box_footprints, args=(token,))
+            t.daemon = True
+            t.start()
+
+    def _clear_launch_box_for_selected(self):
+        token = self.selected_token
+        if token is None or token.kind != "ilp":
+            return
+        self._destroy_launch_box_popup()
+        token.launch_box = None
+        token._box_btn_state = "idle"
+        self.drawing_launch_box_for = None
+        self.map_canvas.configure(cursor="")
+        self._update_token_draw(token)
+        self._build_sidebar(token)
+        self.status_var.set("Launch box cleared")
+
+    def _destroy_launch_box_popup(self):
+        if self._launch_box_popup is not None:
+            try:
+                self._launch_box_popup.destroy()
+            except tk.TclError:
+                pass
+            self._launch_box_popup = None
+
+    def _show_launch_box_popup(self, token):
+        """Small floating panel above the box to pick which threat missiles it fires."""
+        self._destroy_launch_box_popup()
+        box = getattr(token, "launch_box", None)
+        if not box:
+            return
+        win = tk.Toplevel(self.root)
+        self._launch_box_popup = win
+        win.title("Launch box")
+        win.configure(bg=THEME["panel_bg"])
+        win.transient(self.root)
+        outer = tk.Frame(win, bg=THEME["panel_bg"], padx=10, pady=8)
+        outer.pack(fill="both", expand=True)
+        tk.Label(outer, text="Missile types this box fires:", bg=THEME["panel_bg"],
+                 fg=THEME["fg"], font=("TkDefaultFont", 9, "bold")).pack(anchor="w")
+        firing = set(box.get("missile_keys", []))
+        cb_vars = {}
+        for m_key in token.missile_keys:
+            v = tk.BooleanVar(value=(m_key in firing) or not firing)
+            cb_vars[m_key] = v
+            ttk.Checkbutton(outer, text=f"#{m_key} — {self._missile_label(m_key)}", variable=v).pack(anchor="w")
+        grid_row = tk.Frame(outer, bg=THEME["panel_bg"])
+        grid_row.pack(fill="x", pady=(6, 2))
+        tk.Label(grid_row, text="Grid N×N:", bg=THEME["panel_bg"], fg=THEME["fg"]).pack(side="left")
+        grid_var = tk.StringVar(value=str(box.get("grid_n", 3)))
+        ttk.Entry(grid_row, textvariable=grid_var, width=5).pack(side="left", padx=4)
+
+        def on_grid_change(*_a):
+            try:
+                box["grid_n"] = max(1, min(8, int(float(grid_var.get()))))
+            except (ValueError, tk.TclError):
+                return
+            self._update_token_draw(token)
+        grid_var.trace_add("write", on_grid_change)
+
+        def apply_selection():
+            sel = [k for k, v in cb_vars.items() if v.get()]
+            if not sel:
+                self.status_var.set("Select at least one missile for the box")
+                return
+            try:
+                gn = max(1, min(8, int(float(grid_var.get()))))
+            except (ValueError, tk.TclError):
+                gn = 3
+            box["missile_keys"] = sel
+            box["grid_n"] = gn
+            self._update_token_draw(token)
+            self._destroy_launch_box_popup()
+            self.status_var.set("Firing missiles set — press Proceed on the box button to compute")
+
+        tk.Label(outer, text="Pick which missiles fire, then press Proceed on the box button.",
+                 bg=THEME["panel_bg"], fg=THEME["fg_muted"], font=("TkDefaultFont", 9),
+                 wraplength=240, justify="left").pack(anchor="w", pady=(6, 2))
+        self._lib_btn(outer, "Apply firing selection", apply_selection, primary=True).pack(anchor="w", pady=(2, 0))
+        win.bind("<Escape>", lambda e: self._destroy_launch_box_popup())
+        win.protocol("WM_DELETE_WINDOW", self._destroy_launch_box_popup)
+        win.update_idletasks()
+        x1, y1 = self._latlon_to_xy(box["lat1"], box["lon1"])
+        x2, y2 = self._latlon_to_xy(box["lat2"], box["lon2"])
+        rx = self.map_canvas.winfo_rootx() + int((x1 + x2) / 2) - 90
+        ry = self.map_canvas.winfo_rooty() + int(min(y1, y2)) - win.winfo_height() - 8
+        win.geometry(f"+{max(0, rx)}+{max(0, ry)}")
+
+    def _compute_launch_box_footprints(self, token):
+        try:
+            box = getattr(token, "launch_box", None)
+            if not box:
+                return
+            firing = box.get("missile_keys") or list(token.missile_keys)
+            samples = self._launch_box_samples(box)
+            interceptor_keys = token.interceptor_keys[:] if token.interceptor_keys else [int(token.config.get("itype", 11))]
+            loft = bool(getattr(token, "fixed_mlp_loft", False))
+            colors = ["red", "blue", "green", "orange", "purple", "brown", "cyan", "magenta"]
+            footprints = []
+            layer = 0
+            n_attempt = 0      # launch-point x missile attempts
+            n_in_range = 0     # of those, with the launch point within the missile's reach
+            for m_key in firing:
+                missile_data = rd.missile(m_key, ROCKET_DATA_PATH)
+                if missile_data is False:
+                    continue
+                if token.use_range_override and token.range_override_km > 0:
+                    missile_data = dict(missile_data)
+                    missile_data["range"] = str(token.range_override_km)
+                tables = ss.build_mlp_tables(missile_data, loft=loft)  # once per missile, shared cache
+                m_max = tables["max_range"]
+                m_label = self._missile_label(m_key)
+                for (mlat, mlon) in samples:
+                    D = self._geodesic_distance_km(token.lat, token.lon, mlat, mlon) * 1000.0
+                    if D <= 0:
+                        continue
+                    n_attempt += 1
+                    if D < m_max:
+                        n_in_range += 1
+                    az = self._bearing_between(token.lat, token.lon, mlat, mlon)
+                    for i_key in interceptor_keys:
+                        xy = self._calculate_footprint_xy(
+                            token, m_key, i_type_override=i_key, from_mlp=True,
+                            mlp_dist_m_override=D, mlp_tables=tables)
+                        if not xy:
+                            continue
+                        det_label = self._footprint_det_label(token)
+                        footprints.append({
+                            "missile_key": m_key, "i_key": i_key, "boresight": az,
+                            "label": (
+                                f"Box MLP({mlat:.2f},{mlon:.2f}) · {m_label} · "
+                                f"{self._interceptor_label(i_key)} · {det_label}"
+                            ),
+                            "color": colors[layer % len(colors)],
+                            "points": footprint_xy_to_meters(xy),
+                        })
+                        layer += 1
+            self._store_footprint_calculation(
+                token, "launch_box", footprints,
+                from_mlp_mode=True, full_sector_mode=False,
+            )
+        except Exception as exc:
+            self._safe_status_update(f"Error: {exc}")
+            return
+        if not token.footprints:
+            # Empty is usually physics, not a range check: a launch point very short
+            # vs the missile's max range forces a flat/depressed trajectory the interceptor
+            # can't engage, and one near max range is degenerate (threat barely reaches).
+            if n_in_range == 0:
+                msg = f"Launch box: all {n_attempt} sampled points are beyond the missile's range — move the box closer."
+            else:
+                msg = (f"Launch box: {n_in_range}/{n_attempt} points within range but none yielded an "
+                       f"interceptable footprint (very short range → flat/depressed trajectory, or near "
+                       f"max range → degenerate). Try a box at an intermediate launch distance.")
+            self.root.after(0, lambda m=msg: self._finish_footprint(token, m))
+            return
+        self.root.after(0, lambda: self._finish_footprint(token, f"Launch-box footprints: {len(token.footprints)} layers"))
+
+    def _clear_fixed_mlp_for_selected(self):
+        token = self.selected_token
+        if token is None or token.kind != "ilp":
+            return
+        self.placing_fixed_mlp_for = None
+        token.fixed_mlp_latlon = None
+        token._mlp_btn_state = "idle"
+        self.map_canvas.configure(cursor="")
+        self._update_token_draw(token)
+        self._build_sidebar(token)
+        self.status_var.set("Launch point cleared")
+
+    def _set_fixed_mlp(self, token, lat, lon):
+        token.fixed_mlp_latlon = (clamp(lat, -85, 85), ((lon + 180) % 360) - 180)
+        token.center_dir = self._bearing_between(
+            token.lat, token.lon, token.fixed_mlp_latlon[0], token.fixed_mlp_latlon[1]
+        )
+        self._update_token_draw(token)
+        self._refresh_sidebar_token(token)
+
+    def _reset_isolation_for_selected(self):
+        token = self.selected_token
+        if token is None or token.kind != "ilp":
+            return
+        self._apply_sidebar()
+        if getattr(token, "isolated_azimuth", None) is None:
+            self.status_var.set("No launch point isolated")
+            self._update_token_draw(token)
+            return
+        self._clear_isolation(token)
 
     def _run_mlp_ranges(self):
         token = self.selected_token
@@ -2076,50 +3542,113 @@ class MapApp:
             return
         self.root.after(0, lambda: self._finish_footprint(token))
 
-    def _compute_and_render(self, token):
+    def _compute_and_render(self, token, from_mlp=False, from_ranges=False):
         try:
             footprints = []
             colors = ["red", "blue", "green", "orange", "purple", "brown", "cyan", "magenta"]
             gbewr_tokens = [self.tokens[tid] for tid in (token.gbewr_assigned or []) if tid in self.tokens and self.tokens[tid].kind == "gbewr"]
-            for idx, m_key in enumerate(token.missile_keys):
-                base_color = colors[idx % len(colors)]
-                footprint_xy = self._calculate_footprint_xy(token, m_key, gbewr_list=None)
-                if footprint_xy:
-                    if token.use_sectoral:
-                        footprint_xy = self._filter_sector_points(footprint_xy, token.sector_width)
+            det_sweep = self._parse_km_sweep(token.det_sweep_km_csv) if token.use_det_sweep else []
+            interceptor_keys = token.interceptor_keys[:] if token.interceptor_keys else [int(token.config.get("itype", 11))]
+            # When a single launch point is isolated, compute only that missile and
+            # don't clip to the sector (a single launch point is one azimuth, not a span).
+            # Isolating an arc dot routes through the from-launch-point solver (from_mlp=True).
+            # from_ranges: launch point per missile = the central (boresight) dot on that
+            # missile's own max-range arc -- all computed at once via the same solver.
+            eff_from_mlp = from_mlp or from_ranges
+            isolated = (token.isolated_azimuth is not None) and not from_ranges
+            restrict_missile = isolated and token.isolated_missile_key is not None
+            loft_txt = "loft" if getattr(token, "fixed_mlp_loft", False) else "depr"
+            if from_ranges:
+                iso_prefix = ""  # built per-missile below (includes the range)
+            elif from_mlp:
+                iso_prefix = f"Isolated LP ({loft_txt}) · " if isolated else f"From MLP ({loft_txt}) · "
+            elif isolated:
+                iso_prefix = f"Isolated az {token.isolated_azimuth:.0f}° · "
+            else:
+                iso_prefix = ""
+            missile_keys = [token.isolated_missile_key] if restrict_missile else token.missile_keys
+            apply_sectoral = token.use_sectoral and not isolated and not eff_from_mlp
+            for idx, m_key in enumerate(missile_keys):
+                # Per-missile launch-point distance for "from ranges" = this missile's max range.
+                mlp_override = None
+                eff_prefix = iso_prefix
+                if from_ranges:
+                    rng_km = self._cached_missile_range_km(token, m_key)
+                    if not rng_km:
+                        continue
+                    mlp_override = float(rng_km) * 1000.0
+                    eff_prefix = f"From range {rng_km:.0f}km ({loft_txt}) · "
+                for i_idx, i_key in enumerate(interceptor_keys):
+                    i_label = self._interceptor_label(i_key)
+                    m_label = self._missile_label(m_key)
+                    base_color = colors[(idx + i_idx) % len(colors)]
+                    footprint_xy = self._calculate_footprint_xy(token, m_key, gbewr_list=None, i_type_override=i_key, from_mlp=eff_from_mlp, mlp_dist_m_override=mlp_override)
                     if footprint_xy:
-                        if token.use_det_range_override:
-                            base_label = "Fixed det"
-                        elif token.use_space_based_delay:
-                            base_label = "Space-based"
-                        else:
-                            base_label = "Native det"
-                        if getattr(token, "use_op_range_override", False) and getattr(token, "op_range_override_km", 0) > 0:
-                            base_label += f" · op_cap={token.op_range_override_km:.0f}km*"
-                        footprints.append({
-                            "missile_key": m_key,
-                            "label": base_label,
-                            "color": base_color,
-                            "points": normalize_xy_to_meters(footprint_xy)
-                        })
-                for gb_idx, gb_tok in enumerate(gbewr_tokens):
-                    spec = gbewr.get_radar_spec(gb_tok.r_key) or {}
-                    gb_list = [{"lat": gb_tok.lat, "lon": gb_tok.lon, "range_km": spec.get("range_km", 0)}]
-                    footprint_xy = self._calculate_footprint_xy(token, m_key, gbewr_list=gb_list)
-                    if footprint_xy:
-                        if token.use_sectoral:
+                        if apply_sectoral:
                             footprint_xy = self._filter_sector_points(footprint_xy, token.sector_width)
                         if footprint_xy:
-                            label = "GBEWR: " + (spec.get("type", f"r{gb_tok.r_key}")[:24])
-                            if token.use_op_range_override and token.op_range_override_km > 0:
-                                label += f" · op_cap={token.op_range_override_km:.0f}km*"
+                            base_label = self._footprint_det_label(token)
+                            if getattr(token, "use_op_range_override", False) and getattr(token, "op_range_override_km", 0) > 0:
+                                base_label += f" · op_cap={token.op_range_override_km:.0f}km*"
                             footprints.append({
                                 "missile_key": m_key,
-                                "label": label,
-                                "color": colors[(idx + 2 + gb_idx) % len(colors)],
-                                "points": normalize_xy_to_meters(footprint_xy)
+                                "label": f"{eff_prefix}{m_label} · {i_label} · {base_label}",
+                                "color": base_color,
+                                "points": footprint_xy_to_meters(footprint_xy)
                             })
-            token.footprints = footprints
+                    for gb_idx, gb_tok in enumerate([] if eff_from_mlp else gbewr_tokens):
+                        spec = gbewr.get_radar_spec(gb_tok.r_key) or {}
+                        gb_list = [{"lat": gb_tok.lat, "lon": gb_tok.lon, "range_km": spec.get("range_km", 0)}]
+                        footprint_xy = self._calculate_footprint_xy(token, m_key, gbewr_list=gb_list, i_type_override=i_key)
+                        if footprint_xy:
+                            if apply_sectoral:
+                                footprint_xy = self._filter_sector_points(footprint_xy, token.sector_width)
+                            if footprint_xy:
+                                label = "GBEWR: " + (spec.get("type", f"r{gb_tok.r_key}")[:24])
+                                if token.use_op_range_override and token.op_range_override_km > 0:
+                                    label += f" · op_cap={token.op_range_override_km:.0f}km*"
+                                footprints.append({
+                                    "missile_key": m_key,
+                                    "label": f"{eff_prefix}{m_label} · {i_label} · {label}",
+                                    "color": colors[(idx + i_idx + 2 + gb_idx) % len(colors)],
+                                    "points": footprint_xy_to_meters(footprint_xy)
+                                })
+                    for det_idx, det_km in enumerate(det_sweep):
+                        footprint_xy = self._calculate_footprint_xy(
+                            token,
+                            m_key,
+                            gbewr_list=None,
+                            forced_det_range_km=det_km,
+                            i_type_override=i_key,
+                            from_mlp=eff_from_mlp,
+                            mlp_dist_m_override=mlp_override,
+                        )
+                        if footprint_xy:
+                            if apply_sectoral:
+                                footprint_xy = self._filter_sector_points(footprint_xy, token.sector_width)
+                            if footprint_xy:
+                                label = f"Det {det_km:g} km"
+                                if token.use_op_range_override and token.op_range_override_km > 0:
+                                    label += f" · op_cap={token.op_range_override_km:.0f}km*"
+                                footprints.append({
+                                    "missile_key": m_key,
+                                    "label": f"{eff_prefix}{m_label} · {i_label} · {label}",
+                                    "color": colors[(idx + i_idx + 4 + det_idx) % len(colors)],
+                                    "points": footprint_xy_to_meters(footprint_xy)
+                                })
+            if from_ranges:
+                mode_id = "from_ranges"
+            elif from_mlp and isolated:
+                mode_id = "isolated_lp"
+            elif from_mlp:
+                mode_id = "from_mlp"
+            else:
+                mode_id = "classic"
+            self._store_footprint_calculation(
+                token, mode_id, footprints,
+                from_mlp_mode=eff_from_mlp,
+                full_sector_mode=False,
+            )
         except Exception as exc:
             self.status_var.set(f"Error: {exc}")
             return
@@ -2129,17 +3658,246 @@ class MapApp:
         self.root.after(0, lambda: self._finish_footprint(token))
 
     def _finish_footprint(self, token, message=None):
+        self._sync_footprint_ids_and_visibility(token, reset_visibility=True)
+        active = getattr(token, "active_footprint_mode", None)
+        calcs = getattr(token, "footprint_calculations", None) or {}
+        if active and active in calcs:
+            calcs[active]["det_label"] = self._footprint_det_label(token)
         self.status_var.set(message or "Footprint updated")
         self._update_token_draw(token)
 
+    def _destroy_footprint_layer_popup(self):
+        if self._footprint_layer_popup is not None:
+            try:
+                self._footprint_layer_popup.destroy()
+            except tk.TclError:
+                pass
+            self._footprint_layer_popup = None
+
+    def _show_footprint_layer_popup(self, token):
+        """Popup near the ILP to switch Calculation Mode and toggle footprint layers."""
+        self._sync_footprint_ids_and_visibility(token, reset_visibility=False)
+        self._destroy_footprint_layer_popup()
+
+        win = tk.Toplevel(self.root)
+        self._footprint_layer_popup = win
+        win.title(f"Footprints — {token.name}")
+        win.configure(bg=THEME["panel_bg"])
+        win.transient(self.root)
+        win.resizable(True, True)
+
+        outer = tk.Frame(win, bg=THEME["panel_bg"], padx=14, pady=12)
+        outer.pack(fill="both", expand=True)
+
+        calc_modes = self._iter_footprint_calc_modes(token)
+        mode_var = tk.StringVar(
+            value=token.active_footprint_mode or (calc_modes[0][0] if calc_modes else "")
+        )
+
+        if len(calc_modes) > 1:
+            tk.Label(
+                outer,
+                text="Calculation Mode",
+                bg=THEME["panel_bg"],
+                fg=THEME["fg"],
+                font=("TkDefaultFont", 9, "bold"),
+            ).pack(anchor="w")
+            mode_frame = tk.Frame(outer, bg=THEME["panel_bg"])
+            mode_frame.pack(fill="x", pady=(4, 8))
+            for mode_id, entry in calc_modes:
+                layer_count = len(entry.get("footprints") or [])
+                suffix = f" ({layer_count} layer{'s' if layer_count != 1 else ''})" if layer_count else ""
+                ttk.Radiobutton(
+                    mode_frame,
+                    text=f"{entry.get('label', mode_id)}{suffix}",
+                    value=mode_id,
+                    variable=mode_var,
+                ).pack(anchor="w", pady=1)
+
+        layers_heading = tk.Label(
+            outer,
+            text="Layers",
+            bg=THEME["panel_bg"],
+            fg=THEME["fg"],
+            font=("TkDefaultFont", 9, "bold"),
+        )
+        # scrollable container so long layer lists (full-sector / launch-box) don't overflow
+        checks_host = tk.Frame(outer, bg=THEME["panel_bg"])
+        checks_canvas = tk.Canvas(checks_host, bg=THEME["panel_bg"], highlightthickness=0,
+                                  width=380, height=300)
+        checks_vbar = ttk.Scrollbar(checks_host, orient="vertical", command=checks_canvas.yview)
+        checks_canvas.configure(yscrollcommand=checks_vbar.set)
+        checks_vbar.pack(side="right", fill="y")
+        checks_canvas.pack(side="left", fill="both", expand=True)
+        checks_frame = tk.Frame(checks_canvas, bg=THEME["panel_bg"])
+        _checks_win = checks_canvas.create_window((0, 0), window=checks_frame, anchor="nw")
+        checks_frame.bind("<Configure>", lambda e: checks_canvas.configure(scrollregion=checks_canvas.bbox("all")))
+        checks_canvas.bind("<Configure>", lambda e: checks_canvas.itemconfigure(_checks_win, width=e.width))
+        checks_canvas.bind("<MouseWheel>", lambda e: checks_canvas.yview_scroll(int(-e.delta / 120), "units"))
+        cb_vars = []
+
+        def redraw():
+            self._draw_footprint(token)
+
+        def rebuild_layers():
+            for child in checks_frame.winfo_children():
+                child.destroy()
+            cb_vars.clear()
+            if len(token.footprints or []) <= 1:
+                layers_heading.pack_forget()
+                checks_host.pack_forget()
+                return
+            if len(calc_modes) > 1:
+                layers_heading.pack(anchor="w", pady=(4, 0))
+            else:
+                layers_heading.pack_forget()
+            checks_host.pack(fill="both", expand=True, pady=(4, 8))
+            for fp in token.footprints:
+                fp_id = int(fp.get("fp_id", 0))
+                row = tk.Frame(checks_frame, bg=THEME["panel_bg"])
+                row.pack(fill="x", pady=2)
+                sw = tk.Canvas(row, width=14, height=14, highlightthickness=0, bg=THEME["panel_bg"])
+                sw.create_rectangle(1, 1, 13, 13, outline=fp.get("color", "#888"), width=2, fill=THEME["panel_bg"])
+                sw.pack(side="left", padx=(0, 6))
+                display = fp.get("label") or self._missile_label(fp["missile_key"])
+                var = tk.BooleanVar(value=self._fp_layer_visible(token, fp_id))
+                cb_vars.append((fp_id, var))
+
+                def on_toggle(fid=fp_id, v=var):
+                    token.footprint_visibility[fid] = v.get()
+                    self._persist_active_footprint_state(token)
+                    redraw()
+
+                ttk.Checkbutton(
+                    row,
+                    text=f"#{fp_id + 1} · m{fp['missile_key']} · {display}",
+                    variable=var,
+                    command=on_toggle,
+                ).pack(side="left", fill="x", expand=True)
+
+        def on_mode_change(*_args):
+            self._switch_footprint_mode(token, mode_var.get())
+            rebuild_layers()
+            redraw()
+
+        if len(calc_modes) > 1:
+            mode_var.trace_add("write", on_mode_change)
+            on_mode_change()
+        else:
+            if len(calc_modes) == 1:
+                tk.Label(
+                    outer,
+                    text="Toggle overlays on the map (computed footprints are unchanged).",
+                    bg=THEME["panel_bg"],
+                    fg=THEME["fg_muted"],
+                    font=("TkDefaultFont", 9),
+                    wraplength=420,
+                    justify="left",
+                ).pack(anchor="w")
+            rebuild_layers()
+
+        btn_row = tk.Frame(outer, bg=THEME["panel_bg"])
+        btn_row.pack(fill="x", pady=(6, 0))
+
+        def show_all():
+            for fid, v in cb_vars:
+                v.set(True)
+                token.footprint_visibility[fid] = True
+            self._persist_active_footprint_state(token)
+            redraw()
+
+        def hide_all():
+            for fid, v in cb_vars:
+                v.set(False)
+                token.footprint_visibility[fid] = False
+            self._persist_active_footprint_state(token)
+            redraw()
+
+        def close():
+            self._persist_active_footprint_state(token)
+            self._destroy_footprint_layer_popup()
+
+        if cb_vars:
+            ttk.Button(btn_row, text="Show all", command=show_all).pack(side="left", padx=(0, 6))
+            ttk.Button(btn_row, text="Hide all", command=hide_all).pack(side="left", padx=(0, 6))
+        ttk.Button(btn_row, text="Close", command=close).pack(side="right")
+
+        win.bind("<Escape>", lambda e: close())
+        win.protocol("WM_DELETE_WINDOW", close)
+
+        win.update_idletasks()
+        cx, cy = self._latlon_to_xy(token.lat, token.lon)
+        rx = self.map_canvas.winfo_rootx() + int(cx) + 18
+        ry = self.map_canvas.winfo_rooty() + int(cy) + 18
+        win.geometry(f"+{rx}+{ry}")
+
     def _set_status(self, message):
         self.status_var.set(message)
+
+    def _on_status_change(self, *_args):
+        """Run the busy spinner while a 'Computing…' status is showing. Marshalled to the
+        main thread since status can be set from worker threads."""
+        try:
+            busy = self.status_var.get().strip().lower().startswith("computing")
+        except tk.TclError:
+            return
+        self.root.after(0, self._spinner_start if busy else self._spinner_stop)
+
+    def _spinner_start(self):
+        if self._spin_job is not None:
+            return
+        try:
+            self._spin_canvas.grid()
+        except tk.TclError:
+            return
+        self._spin_step()
+
+    def _spin_step(self):
+        c = self._spin_canvas
+        try:
+            c.delete("all")
+        except tk.TclError:
+            self._spin_job = None
+            return
+        # faint full ring + a bright rotating arc
+        c.create_oval(3, 3, 15, 15, outline=THEME["border"], width=2)
+        c.create_arc(3, 3, 15, 15, start=self._spin_angle, extent=110,
+                     style="arc", outline=THEME["success"], width=3)
+        self._spin_angle = (self._spin_angle - 40) % 360
+        self._spin_job = self.root.after(70, self._spin_step)
+
+    def _spinner_stop(self):
+        if self._spin_job is not None:
+            try:
+                self.root.after_cancel(self._spin_job)
+            except tk.TclError:
+                pass
+            self._spin_job = None
+        try:
+            self._spin_canvas.delete("all")
+            self._spin_canvas.grid_remove()
+        except tk.TclError:
+            pass
 
     def _safe_status_update(self, msg):
         """Thread-safe status bar update."""
         self.root.after(0, lambda: self.status_var.set(msg))
 
-    def _calculate_footprint_xy(self, token, m_type, gbewr_list=None):
+    def _open_builder(self):
+        if not MPL_TK_AVAILABLE:
+            messagebox.showerror("Builder", "matplotlib (TkAgg) is required for the Builder window.")
+            return
+        existing = getattr(self, "_builder_win", None)
+        if existing is not None and getattr(existing, "win", None) is not None:
+            try:
+                existing.win.deiconify()
+                existing.win.lift()
+                return
+            except tk.TclError:
+                pass
+        self._builder_win = BuilderWindow(self)
+
+    def _calculate_footprint_xy(self, token, m_type, gbewr_list=None, forced_det_range_km=None, i_type_override=None, from_mlp=False, mlp_dist_m_override=None, mlp_tables=None):
         cfg = token.config
         sat_delay_prev = fcc_constants.sat_delay
         try:
@@ -2150,7 +3908,7 @@ class MapApp:
             fcc_constants.sat_delay = max(0.0, delay_s)
         else:
             fcc_constants.sat_delay = 0.0
-        i_type = int(cfg.get("itype", 11))
+        i_type = int(i_type_override if i_type_override is not None else cfg.get("itype", 11))
         h_int_min = float(cfg.get("h_int_min", 0.0))
         h_discr = float(cfg.get("h_discr", 0.0))
         t_delay = float(cfg.get("t_delay", 0.0))
@@ -2159,6 +3917,8 @@ class MapApp:
         num_steps_mode2 = int(cfg.get("num_steps_mode2", 15))
         acc = float(cfg.get("acc", 0.03))
         emode_sls = bool(cfg.get("set_shoot_look_shoot", False))
+        emode_sls_timed = bool(cfg.get("set_sls_timed", False))
+        sls_delay_s = max(0.0, float(cfg.get("sls_delay_s", 0.0)))
 
         try:
             missile_data = rd.missile(m_type, ROCKET_DATA_PATH)
@@ -2197,7 +3957,9 @@ class MapApp:
             op_range = float(token.op_range_override_km) * 1000.0
 
         det_range = 0.0
-        if token.use_space_based_delay:
+        if forced_det_range_km is not None:
+            det_range = max(0.0, float(forced_det_range_km)) * 1000.0
+        elif token.use_space_based_delay:
             # Space-based override keeps det_range at 0 so sat-delay cueing is used.
             det_range = 0.0
         elif token.use_det_range_override and token.det_range_override_km > 0:
@@ -2219,15 +3981,57 @@ class MapApp:
         try:
             if mode2 and gbewr_list and len(gbewr_list) > 0:
                 det_range = gbewr.make_det_range_func(
-                    token.lat, token.lon, token.center_dir,
+                    token.lat, token.lon, self._effective_center_dir(token),
                     det_range, trj, gbewr_list,
                     base_uses_sat_delay=token.use_space_based_delay
                 )
 
             int_table = m.load_int_table(i_type, fcc_constants.psi_step, beta_step, ROCKET_DATA_PATH, "", cfg.get("set_keep_int_tables", True))
 
+            if from_mlp:
+                # Footprint defended against a threat from one FIXED launch point:
+                # the MLP->target range (hence trajectory) changes per analyzed point.
+                # Uses the mode-1 (fi/dist) parameterization regardless of fp_calc_mode.
+                if mlp_dist_m_override is not None:
+                    # explicit ILP->launch-point distance (e.g. this missile's own max range)
+                    d_im = float(mlp_dist_m_override)
+                else:
+                    mlp_latlon = getattr(token, "fixed_mlp_latlon", None)
+                    if not mlp_latlon:
+                        return []
+                    mlp_lat, mlp_lon = mlp_latlon
+                    d_im = self._geodesic_distance_km(token.lat, token.lon, mlp_lat, mlp_lon) * 1000.0
+                if d_im <= 0:
+                    return []
+                if emode_sls_timed:
+                    base_search = ss.make_sls_timed_search(sls_delay_s)
+                elif emode_sls:
+                    base_search = ss.sls_search
+                else:
+                    base_search = ss.short_search
+                mlp_search, fmlp_max_range = ss.make_fixed_mlp_search(
+                    missile_data, d_im,
+                    loft=bool(getattr(token, "fixed_mlp_loft", False)),
+                    s_func=base_search,
+                    tables=mlp_tables,
+                )
+                reach = d_im + fmlp_max_range
+                fake_trj = np.array([[0.0, R_e, 0.0], [1.0, R_e, reach / R_e]])
+                footprint_tab = fp.footprint_calc_v2(
+                    mlp_search, fake_trj, int_table, h_int_min, maxia, t_int_lnc,
+                    angle_step, op_range, det_range, t_delay, h_discr, acc, reach * dist_param
+                )
+                if not np.any(footprint_tab):
+                    return []
+                return [(row[3], row[4]) for row in footprint_tab]
+
             if not mode2:
-                search_func = ss.sls_search if emode_sls else ss.short_search
+                if emode_sls_timed:
+                    search_func = ss.make_sls_timed_search(sls_delay_s)
+                elif emode_sls:
+                    search_func = ss.sls_search
+                else:
+                    search_func = ss.short_search
                 dist = mrange * dist_param
                 footprint_tab = fp.footprint_calc_v2(
                     search_func,
@@ -2248,7 +4052,12 @@ class MapApp:
                     return []
                 return [(row[3], row[4]) for row in footprint_tab]
 
-            search_func = ss.sls_search2 if emode_sls else ss.short_search2
+            if emode_sls_timed:
+                search_func = ss.make_sls_timed_search2(sls_delay_s)
+            elif emode_sls:
+                search_func = ss.sls_search2
+            else:
+                search_func = ss.short_search2
             footprint_tab2 = ss.footprint_mode2(
                 search_func,
                 trj,
@@ -2308,6 +4117,8 @@ class MapApp:
                 self.sidebar_vars["use_space_based_delay"].set(raw_space_override)
             token.use_det_range_override = raw_det_override
             token.det_range_override_km = float(self.sidebar_vars["det_range_override"].get() or 0.0)
+            token.use_det_sweep = bool(self.sidebar_vars["use_det_sweep"].get())
+            token.det_sweep_km_csv = str(self.sidebar_vars["det_sweep_km_csv"].get() or "").strip()
             token.use_space_based_delay = raw_space_override
             token.space_based_delay_s = max(0.0, float(self.sidebar_vars["space_based_delay_s"].get() or 0.0))
             token.config["set_sat_delay"] = token.space_based_delay_s
@@ -2315,6 +4126,15 @@ class MapApp:
             token.range_override_km = float(self.sidebar_vars["range_override"].get() or 0.0)
             token.use_op_range_override = bool(self.sidebar_vars["use_op_range_override"].get())
             token.op_range_override_km = float(self.sidebar_vars["op_range_override_km"].get() or 0.0)
+            if "show_threat_arc" in self.sidebar_vars:
+                token.show_threat_arc = bool(self.sidebar_vars["show_threat_arc"].get())
+            if "threat_arc_samples" in self.sidebar_vars:
+                try:
+                    token.threat_arc_samples = max(2, int(float(self.sidebar_vars["threat_arc_samples"].get())))
+                except (ValueError, TypeError):
+                    pass
+            if "fixed_mlp_loft" in self.sidebar_vars:
+                token.fixed_mlp_loft = bool(self.sidebar_vars["fixed_mlp_loft"].get())
 
             missile_list = self.sidebar_vars.get("missile_list")
             if missile_list is not None:
@@ -2326,6 +4146,18 @@ class MapApp:
                 if selected:
                     token.missile_keys = selected
                     token.config["mtype"] = selected[0]
+
+            i_combo = self.sidebar_vars.get("ilp_itype_combo")
+            i_keys = self.sidebar_vars.get("ilp_itype_keys", [])
+            if i_combo is not None and i_keys:
+                i_idx = i_combo.current()
+                if 0 <= i_idx < len(i_keys):
+                    token.config["itype"] = int(i_keys[i_idx])
+
+            i_list = self.sidebar_vars.get("interceptor_list")
+            if i_list is not None and i_keys:
+                selected_i = [int(i_keys[i]) for i in i_list.curselection() if i < len(i_keys)]
+                token.interceptor_keys = selected_i or [int(token.config.get("itype", 11))]
 
             gbewr_list = self.sidebar_vars.get("gbewr_list")
             gbewr_ids = self.sidebar_vars.get("gbewr_token_ids", [])
@@ -2379,6 +4211,7 @@ class MapApp:
             icon="warning"
         ):
             return
+        self._destroy_footprint_layer_popup()
         token_id = token.token_id
         token_tag = f"token:{token_id}"
         self.map_canvas.delete(token_tag)
@@ -2398,13 +4231,43 @@ class MapApp:
     def _refresh_sidebar_token(self, token):
         if self.selected_token != token:
             return
-        self.sidebar_vars["lat"].set(f"{token.lat:.6f}")
-        self.sidebar_vars["lon"].set(f"{token.lon:.6f}")
-        if token.kind == "ilp":
-            self.sidebar_vars["center_dir"].set(f"{token.center_dir:.1f}")
-            self.sidebar_vars["sector_width"].set(f"{token.sector_width:.1f}")
-            if "space_based_delay_s" in self.sidebar_vars:
-                self.sidebar_vars["space_based_delay_s"].set(f"{token.space_based_delay_s:.1f}")
+        self._suppress_sidebar_trace = True  # these are programmatic, not user edits
+        try:
+            self.sidebar_vars["lat"].set(f"{token.lat:.6f}")
+            self.sidebar_vars["lon"].set(f"{token.lon:.6f}")
+            if token.kind == "ilp":
+                self.sidebar_vars["center_dir"].set(f"{token.center_dir:.1f}")
+                self.sidebar_vars["sector_width"].set(f"{token.sector_width:.1f}")
+                if "space_based_delay_s" in self.sidebar_vars:
+                    self.sidebar_vars["space_based_delay_s"].set(f"{token.space_based_delay_s:.1f}")
+        finally:
+            self._suppress_sidebar_trace = False
+
+    def _parse_km_sweep(self, raw):
+        """Parse comma-separated detection-range list in km."""
+        if not raw:
+            return []
+        out = []
+        for part in str(raw).split(","):
+            text = part.strip()
+            if not text:
+                continue
+            try:
+                val = float(text)
+            except ValueError:
+                continue
+            if val > 0:
+                out.append(val)
+        # Remove duplicates while preserving order
+        uniq = []
+        seen = set()
+        for v in out:
+            key = round(v, 6)
+            if key in seen:
+                continue
+            seen.add(key)
+            uniq.append(v)
+        return uniq
 
     def _set_token_highlight(self, token, selected):
         color = "yellow" if selected else "white"
@@ -2575,6 +4438,169 @@ class MapApp:
         ry = self.root.winfo_rooty() + (self.root.winfo_height() - wh) // 2
         win.geometry(f"+{rx}+{ry}")
 
+    def _destroy_interceptor_flight_preview_win(self):
+        if self._interceptor_flight_preview_win is not None:
+            try:
+                self._interceptor_flight_preview_win.destroy()
+            except tk.TclError:
+                pass
+            self._interceptor_flight_preview_win = None
+
+    def _show_interceptor_flight_preview(self, token):
+        """Run interceptor balmisflight; print to terminal and show summary + charts."""
+        i_key = int(token.config.get("itype", 1))
+        try:
+            interceptor_data = rd.interceptor(i_key, ROCKET_DATA_PATH)
+        except Exception as exc:
+            self._set_status(f"Interceptor data error: {exc}")
+            return
+
+        capture = io.StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = _TeeStream(old_stdout, capture)
+        try:
+            trj = bm.balmisflight(interceptor_data, trajectory_data=True, ind_flight_dataprint=True)
+            if trj is False or trj is None:
+                print("Interceptor flight calculation failed.")
+                i_range = None
+            else:
+                if fcc_constants.check_fpa and interceptor_data.get("traj_type") != "bal_mis":
+                    i_range = -2 * math.radians(trj[len(trj) - 1, 2]) * R_e
+                else:
+                    i_range = trj[len(trj) - 1, 2] * R_e
+                print("Interceptor range = {:.0f} km".format(i_range / 1000))
+        finally:
+            sys.stdout = old_stdout
+
+        text = capture.getvalue()
+        if not text.endswith("\n"):
+            text += "\n"
+
+        self._destroy_interceptor_flight_preview_win()
+        win = tk.Toplevel(self.root)
+        self._interceptor_flight_preview_win = win
+        r_name = interceptor_data.get("type", f"i{i_key}")
+        win.title(f"Interceptor flight — {r_name}")
+        win.configure(bg=THEME["panel_bg"])
+        win.transient(self.root)
+        win.resizable(True, True)
+
+        outer = tk.Frame(win, bg=THEME["panel_bg"], padx=14, pady=12)
+        outer.pack(fill="both", expand=True)
+
+        tk.Label(
+            outer,
+            text=f"{r_name}  ·  i{i_key}",
+            bg=THEME["panel_bg"],
+            fg=THEME["accent"],
+            font=("TkDefaultFont", 12, "bold"),
+        ).pack(anchor="w")
+
+        if i_range is not None:
+            tk.Label(
+                outer,
+                text=f"Range: {i_range / 1000:.0f} km",
+                bg=THEME["panel_bg"],
+                fg=THEME["success"],
+                font=("TkDefaultFont", 11, "bold"),
+            ).pack(anchor="w", pady=(2, 8))
+
+        text_frame = tk.Frame(outer, bg=THEME["panel_bg"])
+        text_frame.pack(fill="both", expand=False, pady=(0, 8))
+
+        text_scroll = tk.Scrollbar(text_frame, orient="vertical")
+        text_widget = tk.Text(
+            text_frame,
+            height=11,
+            width=92,
+            wrap="none",
+            font=("Menlo", 10) if self._is_macos else ("Courier", 10),
+            bg=THEME["entry_bg"],
+            fg=THEME["fg"],
+            insertbackground=THEME["fg"],
+            relief="flat",
+            borderwidth=0,
+            padx=8,
+            pady=8,
+            yscrollcommand=text_scroll.set,
+        )
+        text_scroll.config(command=text_widget.yview)
+        text_scroll.pack(side="right", fill="y")
+        text_widget.pack(side="left", fill="both", expand=True)
+        text_widget.insert("1.0", text)
+        text_widget.configure(state="disabled")
+
+        chart_ok = (
+            MATPLOTLIB_TK_AVAILABLE
+            and trj is not False
+            and trj is not None
+            and len(trj) > 1
+        )
+        if chart_ok:
+            try:
+                fig = _build_flight_trajectory_figure(trj, f"{r_name} trajectory")
+                canvas = FigureCanvasTkAgg(fig, master=outer)
+                canvas.draw()
+                canvas.get_tk_widget().pack(fill="both", expand=True, pady=(4, 8))
+            except Exception as exc:
+                tk.Label(
+                    outer,
+                    text=f"Chart unavailable: {exc}",
+                    bg=THEME["panel_bg"],
+                    fg=THEME["warning"],
+                    font=("TkDefaultFont", 9),
+                ).pack(anchor="w", pady=(0, 8))
+
+        btn_row = tk.Frame(outer, bg=THEME["panel_bg"])
+        btn_row.pack(fill="x")
+
+        def close():
+            self._destroy_interceptor_flight_preview_win()
+
+        dbg = THEME["tool_btn_fg"]
+        btn = tk.Button(
+            btn_row,
+            text="Close",
+            command=close,
+            bg=THEME["tool_btn_bg"],
+            fg=dbg,
+            activebackground=THEME["tool_btn_active_bg"],
+            activeforeground=THEME["tool_btn_active_fg"],
+            font=("TkDefaultFont", 10, "bold"),
+            relief="flat",
+            borderwidth=0,
+            padx=18,
+            pady=8,
+            cursor="hand2",
+            highlightthickness=0,
+        )
+
+        def d_enter(_e):
+            btn.configure(bg=THEME["tool_btn_hover"], fg=dbg)
+
+        def d_leave(_e):
+            btn.configure(bg=THEME["tool_btn_bg"], fg=dbg)
+
+        btn.bind("<Enter>", d_enter)
+        btn.bind("<Leave>", d_leave)
+        btn.pack(anchor="e")
+
+        win.bind("<Escape>", lambda _e: close())
+        win.protocol("WM_DELETE_WINDOW", close)
+
+        win.geometry("900x680")
+        win.update_idletasks()
+        ww = win.winfo_width()
+        wh = win.winfo_height()
+        rx = self.root.winfo_rootx() + max(20, (self.root.winfo_width() - ww) // 2)
+        ry = self.root.winfo_rooty() + max(20, (self.root.winfo_height() - wh) // 2)
+        win.geometry(f"+{rx}+{ry}")
+
+        status = f"Interceptor flight preview — {r_name}"
+        if i_range is not None:
+            status += f" ({i_range / 1000:.0f} km)"
+        self._set_status(status)
+
     def _handle_distance_click(self, event):
         point = self._get_click_point(event)
         if point is None:
@@ -2607,6 +4633,17 @@ class MapApp:
                     return (tok.lat, tok.lon, tok.name, tok)
         lat, lon = self._xy_to_latlon(event.x, event.y)
         return (lat, lon, f"{lat:.4f}, {lon:.4f}", None)
+
+    def _bearing_between(self, lat1, lon1, lat2, lon2):
+        """Initial great-circle bearing (deg, from north) from point 1 to point 2."""
+        if _geod is not None:
+            return _geod.Inverse(lat1, lon1, lat2, lon2)["azi1"] % 360.0
+        p1 = math.radians(lat1)
+        p2 = math.radians(lat2)
+        dl = math.radians(lon2 - lon1)
+        y = math.sin(dl) * math.cos(p2)
+        x = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)
+        return math.degrees(math.atan2(y, x)) % 360.0
 
     def _geodesic_distance_km(self, lat1, lon1, lat2, lon2):
         """Geodesic distance in km between two points."""
@@ -2704,7 +4741,7 @@ class MapApp:
                 return False
             if ilp_token.use_sectoral:
                 footprint_xy = self._filter_sector_points(footprint_xy, ilp_token.sector_width)
-            footprint_points = normalize_xy_to_meters(footprint_xy)
+            footprint_points = footprint_xy_to_meters(footprint_xy)
 
         # Convert lat/lon to ILP-local x,y (meters), then rotate to footprint frame.
         lat0 = ilp_token.lat
@@ -2734,6 +4771,54 @@ class MapApp:
             j = i
         return inside
 
+    def _on_sector_field_change(self):
+        """Live-apply boresight/sector-width edits so the sector and the threat-origin
+        dots track the values as they are typed (no Apply needed)."""
+        if self._suppress_sidebar_trace:
+            return  # programmatic var update (e.g. drag refresh), not a user edit
+        token = self.selected_token
+        if token is None or token.kind != "ilp":
+            return
+        try:
+            cd = float(self.sidebar_vars["center_dir"].get()) % 360.0
+            sw = clamp(float(self.sidebar_vars["sector_width"].get()), 5.0, 180.0)
+        except (ValueError, KeyError, tk.TclError):
+            return  # mid-edit / partial input
+        token.center_dir = cd
+        token.sector_width = sw
+        self._update_token_draw(token)
+
+    def _on_missile_select(self):
+        """Live sync when the threat-missile multi-select changes.
+
+        Updates the selected threat set, and if the primary threat (the 'mtype'
+        text entry in Solver parameters) is no longer among the selected missiles,
+        adopts the first selected one and reflects it in that text entry.
+        """
+        token = self.selected_token
+        if token is None or token.kind not in ("ilp", "mlp"):
+            return
+        lb_key = "missile_list" if token.kind == "ilp" else "mlp_missile_list"
+        listbox = self.sidebar_vars.get(lb_key)
+        if listbox is None:
+            return
+        missiles = self._get_missiles()
+        selected = [int(missiles[i]["m_key"]) for i in listbox.curselection() if i < len(missiles)]
+        if not selected:
+            return
+        token.missile_keys = selected
+        try:
+            primary = int(token.config.get("mtype", 0))
+        except (TypeError, ValueError):
+            primary = 0
+        if primary not in selected:
+            token.config["mtype"] = selected[0]
+            mtype_var = self.sidebar_vars.get("cfg::mtype")
+            if mtype_var is not None:
+                mtype_var.set(str(selected[0]))
+            self._set_status(f"Primary threat #{primary} deselected — now #{selected[0]}")
+        self._update_token_draw(token)
+
     def _populate_missile_list(self, token, listbox):
         listbox.delete(0, tk.END)
         missiles = self._get_missiles()
@@ -2742,6 +4827,18 @@ class MapApp:
             label = f"#{item['m_key']} — {nm}"
             listbox.insert(tk.END, label)
             if int(item["m_key"]) in token.missile_keys:
+                listbox.selection_set(idx)
+
+    def _populate_interceptor_list(self, token, listbox):
+        listbox.delete(0, tk.END)
+        interceptors = self._get_interceptors()
+        active = set(token.interceptor_keys or [int(token.config.get("itype", 11))])
+        for idx, item in enumerate(interceptors):
+            i_key = int(item.get("i_key", item.get("m_key", 0)))
+            nm = (item.get("type") or "").strip() or "unnamed"
+            label = f"#{i_key} — {nm}"
+            listbox.insert(tk.END, label)
+            if i_key in active:
                 listbox.selection_set(idx)
 
     def _config_tooltip(self, key):
@@ -2756,6 +4853,8 @@ class MapApp:
             "angle_step": "Azimuth sampling step for the fast footprint mode.",
             "num_steps_mode2": "Samples along trajectory in Mode 2.",
             "set_shoot_look_shoot": "Use shoot-look-shoot engagement logic when available.",
+            "set_sls_timed": "Timed shoot-look-shoot: launch the second interceptor a fixed delay after the first, instead of waiting for the first to reach the target. Overrides plain Shoot-Look-Shoot when enabled.",
+            "sls_delay_s": "Seconds between the first and second interceptor launches in timed shoot-look-shoot. Shorter delays enlarge the footprint, longer delays shrink it.",
             "set_keep_int_tables": "Keep generated interception tables on disk for debugging.",
             "set_sat_delay": "Latency for space-based cueing (seconds).",
         }
@@ -2805,6 +4904,8 @@ class MapApp:
             "angle_step": "Mode 1 angle step (deg)",
             "num_steps_mode2": "Mode 2 steps",
             "set_shoot_look_shoot": "Shoot-Look-Shoot mode",
+            "set_sls_timed": "Timed Shoot-Look-Shoot mode",
+            "sls_delay_s": "SLS 2nd-shot delay (s)",
             "det_range_list": "Detection ranges list (km)",
             "mumi_list": "Multi-missile list",
             "muin_list": "Multi-interceptor list",
@@ -2914,6 +5015,13 @@ class MapApp:
             self._set_status("Procedures are available for ILP tokens only")
             return
 
+        # Keep token.config (itype, mtype, etc.) in sync with the inspector before fp_gui reads it.
+        self._apply_sidebar()
+
+        if action == "interceptor_flight":
+            self._show_interceptor_flight_preview(token)
+            return
+
         try:
             import fp_gui as fpg
         except Exception as exc:
@@ -2947,8 +5055,6 @@ class MapApp:
                 fpg.gui_trajcharts(missile_data, True)
             elif action == "missile_maxrange":
                 fpg.gui_missile_maxrange()
-            elif action == "interceptor_flight":
-                fpg.gui_interceptor_flight()
             elif action == "interceptor_traj":
                 fpg.gui_interceptor_trajectory()
             elif action == "interceptor_charts":
@@ -3112,6 +5218,14 @@ class MapApp:
                 return name
         return f"m{m_key}"
 
+    def _interceptor_label(self, i_key):
+        interceptors = self._get_interceptors()
+        for item in interceptors:
+            key = int(item.get("i_key", item.get("m_key", -1)))
+            if key == int(i_key):
+                return item.get("type", f"i{i_key}")
+        return f"i{i_key}"
+
     def _get_missile_range_km(self, m_key):
         try:
             missile_data = rd.missile(m_key, ROCKET_DATA_PATH)
@@ -3124,6 +5238,23 @@ class MapApp:
         trj = bm.balmisflight(missile_data)
         mrange = trj[len(trj) - 1, 2] * R_e
         return mrange / 1000.0
+
+    def _destination_latlon(self, lat, lon, bearing_deg, dist_km):
+        """Geodesic destination point at the given bearing and distance."""
+        dist_m = dist_km * 1000.0
+        bearing_deg = bearing_deg % 360.0
+        if _geod is not None:
+            result = _geod.Direct(lat, lon, bearing_deg, dist_m)
+            lon2 = ((result["lon2"] + 180.0) % 360.0) - 180.0
+            return result["lat2"], lon2
+        d = dist_m / R_e
+        b = math.radians(bearing_deg)
+        lat1 = math.radians(lat)
+        lon1 = math.radians(lon)
+        lat2 = math.asin(math.sin(lat1) * math.cos(d) + math.cos(lat1) * math.sin(d) * math.cos(b))
+        lon2 = lon1 + math.atan2(math.sin(b) * math.sin(d) * math.cos(lat1),
+                                 math.cos(d) - math.sin(lat1) * math.sin(lat2))
+        return math.degrees(lat2), ((math.degrees(lon2) + 180) % 360) - 180
 
     def _circle_points(self, lat, lon, radius_km, steps):
         dist_m = radius_km * 1000.0
@@ -3305,7 +5436,9 @@ class MapApp:
     def _draw_cartopy_map(self, w, h):
         dpi = 100
         fig = plt.figure(figsize=(w / dpi, h / dpi), dpi=dpi)
-        ax = plt.axes(projection=ccrs.PlateCarree())
+        # Keep fallback map projection aligned with the Web Mercator math used by
+        # _latlon_to_xy/_xy_to_latlon so overlays stay scale-consistent.
+        ax = plt.axes(projection=ccrs.Mercator())
         z, world_px, left, top, view_w_px, view_h_px = self._view_world_bounds()
         lon_min, lat_max = self._world_px_to_latlon(left, top, z)
         lon_max, lat_min = self._world_px_to_latlon(left + view_w_px, top + view_h_px, z)
@@ -3408,7 +5541,8 @@ class MapApp:
         if _geod is not None:
             bearing = (math.degrees(math.atan2(east_m, north_m)) + 360.0) % 360.0
             result = _geod.Direct(lat, lon, bearing, dist)
-            return result["lat2"], result["lon2"]
+            lon2 = ((result["lon2"] + 180.0) % 360.0) - 180.0
+            return result["lat2"], lon2
         dlat = north_m / R_e
         dlon = east_m / (R_e * math.cos(math.radians(lat)))
         return lat + math.degrees(dlat), lon + math.degrees(dlon)
@@ -3454,6 +5588,662 @@ class MapApp:
         lon = math.degrees(x_m / R_e)
         lat = math.degrees(2 * math.atan(math.exp(y_m / R_e)) - math.pi / 2)
         return lon, lat
+
+
+class BuilderWindow:
+    """Interactive missile / interceptor builder: edit physics specs and see the
+    trajectory, speed and ground-range update live (drag the trajectory to change the
+    launch angle, or the impact marker to set the range). Autofill from a text
+    description via AIP, then Save & Inject into the rocket library."""
+
+    # per-stage columns (each becomes a comma-separated entry in the rocket data)
+    STAGE_COLS = [
+        ("m_st", "Mass kg"), ("m_fu", "Fuel kg"), ("v_ex", "V_exh m/s"),
+        ("t_bu", "Burn s"), ("a_mid", "Body area"), ("t_delay", "Coast s"),
+    ]
+    # single-valued (non-stage) fields
+    SINGLE_FIELDS = [
+        ("cd_type", "Drag model (cd_type)"),
+        ("a_nz", "Nozzle area (a_nz)"),
+        ("c_bal", "Ballistic coeff (c_bal)"),
+        ("m_pl", "Payload kg (m_pl)"),
+        ("m_warhead", "Warhead kg (m_warhead)"),
+        ("m_shroud", "Shroud kg (m_shroud)"),
+        ("t_shroud", "Shroud release s (t_shroud)"),
+        ("vert_launch_height", "Vert launch h m"),
+        ("range", "Range label km (range)"),
+    ]
+    INTERCEPTOR_FIELDS = [
+        ("op_range", "Op range km (op_range)"),
+        ("mpia", "Min intercept alt km (mpia)"),
+        ("maxia", "Max intercept alt km (maxia)"),
+        ("det_range", "Detection range (det_range)"),
+    ]
+    STAGE_DEFAULTS = {"m_st": "1330", "m_fu": "7400", "v_ex": "2254.0",
+                      "t_bu": "127.8", "a_mid": "d 1", "t_delay": ""}
+    NEW_STAGE = {"m_st": "300", "m_fu": "1500", "v_ex": "2600", "t_bu": "40",
+                 "a_mid": "d 0.6", "t_delay": "0"}
+    DEFAULTS = {
+        "type": "New missile", "cd_type": "v2", "a_nz": "0.135", "c_bal": "7320",
+        "m_pl": "500.0", "m_warhead": "", "m_shroud": "", "t_shroud": "",
+        "vert_launch_height": "100", "range": "1000",
+        "grav_turn_angle": "0.7", "flight_path_angle": "40", "traj_type": "bal_mis",
+        "op_range": "", "mpia": "", "maxia": "", "det_range": "",
+    }
+    INTERCEPTOR_DEFAULTS = {  # purpose-built interceptor defaults
+        "type": "New interceptor", "cd_type": "ls", "a_nz": "0", "c_bal": "14300",
+        "m_pl": "150.0", "m_warhead": "", "m_shroud": "0", "t_shroud": "0",
+        "vert_launch_height": "0", "range": "100",
+        "grav_turn_angle": "0.7", "flight_path_angle": "40", "traj_type": "int_endo",
+        "op_range": "100", "mpia": "1", "maxia": "100", "det_range": "300",
+    }
+    INTERCEPTOR_STAGE = {"m_st": "0", "m_fu": "80", "v_ex": "2800",
+                         "t_bu": "2", "a_mid": "0.042", "t_delay": ""}
+    # atmospheric layers (alt_lo_km, alt_hi_km, name, fill color)
+    ATM_LAYERS = [
+        (0, 12, "Troposphere", "#cdebff"),
+        (12, 50, "Stratosphere", "#dcd2ff"),
+        (50, 85, "Mesosphere", "#ffe6bf"),
+        (85, 600, "Thermosphere", "#ffd4d4"),
+    ]
+    KARMAN_KM = 100.0
+
+    def __init__(self, app):
+        self.app = app
+        self.win = tk.Toplevel(app.root)
+        self.win.title("Builder — missile / interceptor")
+        self.win.configure(bg=THEME["panel_bg"])
+        self.win.geometry("1180x760")
+        self.vars = {}
+        self._recompute_job = None
+        self._drag = None        # active matplotlib drag: "angle" or "range"
+        self._last_trj = None
+        self._slider_guard = False
+        self.win.protocol("WM_DELETE_WINDOW", self._close)
+        self._build_ui()
+        self._recompute()
+
+    # ------------------------------------------------------------------ UI
+    def _build_ui(self):
+        left = tk.Frame(self.win, bg=THEME["panel_bg"], width=360)
+        left.pack(side="left", fill="y")
+        left.pack_propagate(False)
+        right = tk.Frame(self.win, bg=THEME["panel_bg"])
+        right.pack(side="left", fill="both", expand=True)
+
+        tk.Label(left, text="Builder", bg=THEME["panel_bg"], fg=THEME["fg"],
+                 font=("TkDefaultFont", 13, "bold")).pack(anchor="w", padx=10, pady=(10, 2))
+
+        # kind + trajectory type
+        kind_row = tk.Frame(left, bg=THEME["panel_bg"]); kind_row.pack(fill="x", padx=10, pady=2)
+        self.kind_var = tk.StringVar(value="missile")
+        for txt, val in (("Missile", "missile"), ("Interceptor", "interceptor")):
+            ttk.Radiobutton(kind_row, text=txt, value=val, variable=self.kind_var,
+                            command=lambda: self._on_kind_change(apply_defaults=True)).pack(side="left", padx=(0, 8))
+        tt_row = tk.Frame(left, bg=THEME["panel_bg"]); tt_row.pack(fill="x", padx=10, pady=2)
+        tk.Label(tt_row, text="Trajectory:", bg=THEME["panel_bg"], fg=THEME["fg"]).pack(side="left")
+        self.vars["traj_type"] = tk.StringVar(value=self.DEFAULTS["traj_type"])
+        self.tt_combo = ttk.Combobox(tt_row, values=["bal_mis"],
+                                     textvariable=self.vars["traj_type"], state="readonly", width=12)
+        self.tt_combo.pack(side="left", padx=6)
+        self.tt_combo.bind("<<ComboboxSelected>>", lambda e: (self._sync_angle_label(), self._schedule_recompute()))
+
+        # scrollable spec fields
+        sf = ScrollableFrame(left, width=340)
+        sf.pack(fill="both", expand=True, padx=4, pady=4)
+        host = sf.inner
+        # launch angle (slider + entry) -- the trajectory-shaping DOF
+        self.vars["grav_turn_angle"] = tk.StringVar(value=self.DEFAULTS["grav_turn_angle"])
+        self.vars["flight_path_angle"] = tk.StringVar(value=self.DEFAULTS["flight_path_angle"])
+        ang_frame = tk.Frame(host, bg=THEME["panel_inner"]); ang_frame.pack(fill="x", padx=6, pady=3)
+        self.angle_label = tk.Label(ang_frame, text="Launch angle", width=22, anchor="w",
+                                    bg=THEME["panel_inner"], fg=THEME["fg"])
+        self.angle_label.pack(side="left")
+        self.angle_entry_var = tk.StringVar(value=self.DEFAULTS["grav_turn_angle"])
+        ae = ttk.Entry(ang_frame, textvariable=self.angle_entry_var, width=8)
+        ae.pack(side="left")
+        self.angle_entry_var.trace_add("write", lambda *a: self._on_angle_entry())
+        self.angle_slider = ttk.Scale(host, from_=0.2, to=80.0, orient="horizontal",
+                                      command=self._on_angle_slider)
+        self.angle_slider.pack(fill="x", padx=8, pady=(0, 6))
+        self.angle_slider.set(float(self.DEFAULTS["grav_turn_angle"]))
+        self._slider_guard = False
+
+        # name
+        self._add_field(host, "type", "Name")
+
+        # ---- interactive multi-stage builder ----
+        self._build_stage_section(host)
+
+        # airframe / payload single fields
+        self.airframe_header = tk.Label(host, text="— Airframe / payload —", bg=THEME["panel_inner"],
+                                        fg=THEME["fg_muted"], font=("TkDefaultFont", 9, "bold"))
+        self.airframe_header.pack(fill="x", padx=6, pady=(8, 2))
+        for key, label in self.SINGLE_FIELDS:
+            self._add_field(host, key, label)
+
+        # interceptor-only interception parameters
+        self.intercept_header = tk.Label(host, text="— Interception —", bg=THEME["panel_inner"],
+                                         fg=THEME["fg_muted"], font=("TkDefaultFont", 9, "bold"))
+        self._interceptor_field_frames = []
+        for key, label in self.INTERCEPTOR_FIELDS:
+            fr = self._add_field(host, key, label)
+            self._interceptor_field_frames.append(fr)
+
+        # AIP autofill
+        tk.Label(left, text="Describe a missile → AIP autofill:", bg=THEME["panel_bg"],
+                 fg=THEME["fg"], font=("TkDefaultFont", 9, "bold")).pack(anchor="w", padx=10, pady=(6, 0))
+        self.aip_text = tk.Text(left, height=3, width=40, wrap="word")
+        self.aip_text.pack(fill="x", padx=10, pady=2)
+        btns = tk.Frame(left, bg=THEME["panel_bg"]); btns.pack(fill="x", padx=10, pady=4)
+        self.app._lib_btn(btns, "Autofill from description", self._autofill_aip).pack(side="left", padx=(0, 6))
+        self.app._lib_btn(btns, "Save & Inject", self._save_inject, primary=True).pack(side="left")
+
+        self.status = tk.Label(left, text="", bg=THEME["panel_bg"], fg=THEME["fg_muted"],
+                               wraplength=340, justify="left", font=("TkDefaultFont", 9))
+        self.status.pack(anchor="w", padx=10, pady=(4, 8))
+
+        # charts
+        self.fig = Figure(figsize=(7.2, 7.0), facecolor="#f7f7fb")
+        gs = self.fig.add_gridspec(2, 2, hspace=0.35, wspace=0.3)
+        self.ax_traj = self.fig.add_subplot(gs[0, 0])
+        self.ax_speed = self.fig.add_subplot(gs[0, 1])
+        self.ax_map = self.fig.add_subplot(gs[1, :])
+        self.canvas = FigureCanvasTkAgg(self.fig, master=right)
+        self.canvas.get_tk_widget().pack(fill="both", expand=True)
+        self.canvas.mpl_connect("button_press_event", self._on_mpl_press)
+        self.canvas.mpl_connect("motion_notify_event", self._on_mpl_motion)
+        self.canvas.mpl_connect("button_release_event", self._on_mpl_release)
+        self._on_kind_change()
+        self._sync_angle_label()
+
+    def _add_field(self, host, key, label):
+        fr = tk.Frame(host, bg=THEME["panel_inner"]); fr.pack(fill="x", padx=6, pady=2)
+        tk.Label(fr, text=label, width=22, anchor="w", bg=THEME["panel_inner"], fg=THEME["fg"],
+                 font=("TkDefaultFont", 9)).pack(side="left")
+        var = tk.StringVar(value=self.DEFAULTS.get(key, ""))
+        self.vars[key] = var
+        ent = ttk.Entry(fr, textvariable=var, width=14); ent.pack(side="left", fill="x", expand=True)
+        var.trace_add("write", lambda *a: self._schedule_recompute())
+        return fr
+
+    # ------------------------------------------------------------- stages
+    def _build_stage_section(self, host):
+        self.stage_vars = []          # list (per stage) of {col: StringVar}
+        self._stage_defaults = dict(self.STAGE_DEFAULTS)
+        hdr = tk.Frame(host, bg=THEME["panel_inner"]); hdr.pack(fill="x", padx=6, pady=(8, 0))
+        tk.Label(hdr, text="Stages", bg=THEME["panel_inner"], fg=THEME["fg"],
+                 font=("TkDefaultFont", 10, "bold")).pack(side="left")
+        self.app._lib_btn(hdr, "−", self._remove_stage).pack(side="right", padx=2)
+        self.stage_count_lbl = tk.Label(hdr, text="1", width=2, bg=THEME["panel_inner"], fg=THEME["fg"])
+        self.stage_count_lbl.pack(side="right")
+        self.app._lib_btn(hdr, "+", self._add_stage).pack(side="right", padx=2)
+        # column headers
+        self.stage_table = tk.Frame(host, bg=THEME["panel_inner"]); self.stage_table.pack(fill="x", padx=6)
+        # generated rocket-data strings (read-only, shows exactly what gets saved)
+        self.stage_summary = tk.Label(host, text="", bg=THEME["panel_inner"], fg=THEME["fg_muted"],
+                                      font=("TkDefaultFont", 8), justify="left", anchor="w", wraplength=320)
+        self.stage_summary.pack(fill="x", padx=6, pady=(2, 4))
+        # seed one stage from defaults
+        self.stage_vars.append({ck: tk.StringVar(value=self._stage_defaults.get(ck, "")) for ck, _ in self.STAGE_COLS})
+        self._rebuild_stage_rows()
+
+    def _rebuild_stage_rows(self):
+        for w in self.stage_table.winfo_children():
+            w.destroy()
+        n = len(self.stage_vars)
+        multi = n > 1
+        # header
+        head = tk.Frame(self.stage_table, bg=THEME["panel_inner"]); head.grid(row=0, column=0, columnspan=7, sticky="w")
+        tk.Label(head, text="#", width=2, bg=THEME["panel_inner"], fg=THEME["fg_muted"],
+                 font=("TkDefaultFont", 8)).grid(row=0, column=0)
+        cols = self.STAGE_COLS if multi else [c for c in self.STAGE_COLS if c[0] != "t_delay"]
+        for ci, (ck, clabel) in enumerate(cols):
+            tk.Label(head, text=clabel, width=8, bg=THEME["panel_inner"], fg=THEME["fg_muted"],
+                     font=("TkDefaultFont", 8)).grid(row=0, column=ci + 1)
+        for si in range(n):
+            row = tk.Frame(self.stage_table, bg=THEME["panel_inner"]); row.grid(row=si + 1, column=0, sticky="w", pady=1)
+            tk.Label(row, text=str(si + 1), width=2, bg=THEME["panel_inner"], fg=THEME["fg"],
+                     font=("TkDefaultFont", 8)).grid(row=0, column=0)
+            for ci, (ck, _l) in enumerate(cols):
+                var = self.stage_vars[si][ck]
+                ent = ttk.Entry(row, textvariable=var, width=8)
+                ent.grid(row=0, column=ci + 1, padx=1)
+                if not getattr(var, "_traced", False):
+                    var.trace_add("write", lambda *a: self._on_stage_change())
+                    var._traced = True
+        self.stage_count_lbl.config(text=str(n))
+        self._on_stage_change()
+
+    def _add_stage(self):
+        if len(self.stage_vars) >= 4:
+            return
+        base = self.INTERCEPTOR_STAGE if self.kind_var.get() == "interceptor" else self.NEW_STAGE
+        self.stage_vars.append({ck: tk.StringVar(value=base.get(ck, "")) for ck, _ in self.STAGE_COLS})
+        self._rebuild_stage_rows()
+
+    def _remove_stage(self):
+        if len(self.stage_vars) <= 1:
+            return
+        self.stage_vars.pop()
+        self._rebuild_stage_rows()
+
+    def _on_stage_change(self):
+        # refresh the generated rocket-data summary and recompute
+        s = self._stage_strings()
+        self.stage_summary.config(text="m_st: {m_st}\nm_fu: {m_fu}\nv_ex: {v_ex}\nt_bu: {t_bu}\n"
+                                       "a_mid: {a_mid}".format(**s)
+                                  + (("\nt_delay: " + s["t_delay"]) if len(self.stage_vars) > 1 else ""))
+        self._schedule_recompute()
+
+    def _stage_strings(self):
+        """Build the comma-separated rocket-data strings from the stage table."""
+        n = len(self.stage_vars)
+        out = {}
+        for ck, _ in self.STAGE_COLS:
+            vals = [self.stage_vars[i][ck].get().strip() for i in range(n)]
+            if ck == "t_delay":
+                if n == 1 or all(v in ("", "0", "0.0") for v in vals[:-1]):
+                    out[ck] = ""
+                    continue
+                vals = [v if v != "" else "0" for v in vals]
+            else:
+                vals = [v if v != "" else "0" for v in vals]
+            out[ck] = vals[0] if n == 1 else ", ".join(vals)
+        return out
+
+    def _set_stages_from_strings(self, specs):
+        """Parse comma-separated rocket-data strings (e.g. from AIP) back into stage rows."""
+        def split(key):
+            raw = str(specs.get(key, "")).split("#", 1)[0]
+            return [p.strip() for p in raw.split(",")] if raw.strip() else []
+        counts = [len(split(k)) for k in ("m_st", "m_fu", "v_ex", "t_bu") if split(k)]
+        n = max(counts) if counts else 1
+        n = max(1, min(4, n))
+        self.stage_vars = []
+        for i in range(n):
+            d = {}
+            for ck, _ in self.STAGE_COLS:
+                parts = split(ck)
+                d[ck] = tk.StringVar(value=(parts[i] if i < len(parts) else self.STAGE_DEFAULTS.get(ck, "")))
+            self.stage_vars.append(d)
+        self._rebuild_stage_rows()
+
+    def _on_kind_change(self, apply_defaults=False):
+        """Reconfigure the form for a purpose-built missile vs interceptor view."""
+        is_int = self.kind_var.get() == "interceptor"
+        # trajectory-type choices differ by kind
+        self.tt_combo.config(values=(["int_endo", "int_exo"] if is_int else ["bal_mis"]))
+        if is_int and self.vars["traj_type"].get() == "bal_mis":
+            self.vars["traj_type"].set("int_endo")
+        elif not is_int and self.vars["traj_type"].get() != "bal_mis":
+            self.vars["traj_type"].set("bal_mis")
+        # optionally reset spec defaults to the kind's purpose-built values
+        if apply_defaults:
+            dflt = self.INTERCEPTOR_DEFAULTS if is_int else self.DEFAULTS
+            for k in self.vars:
+                if k in dflt:
+                    self.vars[k].set(dflt[k])
+            base = self.INTERCEPTOR_STAGE if is_int else self.STAGE_DEFAULTS
+            self.stage_vars = [{ck: tk.StringVar(value=base.get(ck, "")) for ck, _ in self.STAGE_COLS}]
+            self._rebuild_stage_rows()
+        # show/hide the interception section
+        self.intercept_header.pack_forget()
+        for fr in getattr(self, "_interceptor_field_frames", []):
+            fr.pack_forget()
+        if is_int:
+            self.intercept_header.pack(fill="x", padx=6, pady=(8, 2))
+            for fr in self._interceptor_field_frames:
+                fr.pack(fill="x", padx=6, pady=2)
+        self.win.title("Builder — " + ("interceptor" if is_int else "missile"))
+        self._sync_angle_label()
+        self._schedule_recompute()
+
+    # --------------------------------------------------------------- angle
+    def _angle_key(self):
+        return "grav_turn_angle" if self.vars["traj_type"].get() == "bal_mis" else "flight_path_angle"
+
+    def _sync_angle_label(self):
+        ak = self._angle_key()
+        self.angle_label.config(text="Gravity-turn angle°" if ak == "grav_turn_angle" else "Flight-path angle°")
+        self._slider_guard = True
+        try:
+            self.angle_entry_var.set(self.vars[ak].get())
+            self.angle_slider.set(max(0.2, min(80.0, float(self.vars[ak].get() or 0))))
+        except (ValueError, tk.TclError):
+            pass
+        self._slider_guard = False
+
+    def _on_angle_entry(self):
+        if self._slider_guard:
+            return
+        ak = self._angle_key()
+        self.vars[ak].set(self.angle_entry_var.get())
+        try:
+            self._slider_guard = True
+            self.angle_slider.set(max(0.2, min(80.0, float(self.angle_entry_var.get() or 0))))
+        except (ValueError, tk.TclError):
+            pass
+        finally:
+            self._slider_guard = False
+        self._schedule_recompute()
+
+    def _on_angle_slider(self, val):
+        if self._slider_guard:
+            return
+        ak = self._angle_key()
+        sval = f"{float(val):.2f}"
+        self._slider_guard = True
+        self.angle_entry_var.set(sval)
+        self._slider_guard = False
+        self.vars[ak].set(sval)
+        self._schedule_recompute()
+
+    def _set_angle(self, deg):
+        deg = max(0.2, min(80.0, float(deg)))
+        ak = self._angle_key()
+        self.vars[ak].set(f"{deg:.2f}")
+        self._slider_guard = True
+        self.angle_entry_var.set(f"{deg:.2f}")
+        try:
+            self.angle_slider.set(deg)
+        except tk.TclError:
+            pass
+        self._slider_guard = False
+
+    # --------------------------------------------------------------- compute
+    def _string_specs(self):
+        d = dict(self._stage_strings())
+        d["type"] = self.vars["type"].get()
+        for key, _ in self.SINGLE_FIELDS:
+            d[key] = self.vars[key].get()
+        d["traj_type"] = self.vars["traj_type"].get()
+        d["grav_turn_angle"] = self.vars["grav_turn_angle"].get() or "0"
+        d["flight_path_angle"] = self.vars["flight_path_angle"].get() or "0"
+        d["note"] = ""
+        if self.kind_var.get() == "interceptor":
+            for key, _ in self.INTERCEPTOR_FIELDS:
+                d[key] = self.vars[key].get()
+        return d
+
+    def _schedule_recompute(self):
+        if self._recompute_job is not None:
+            try:
+                self.win.after_cancel(self._recompute_job)
+            except tk.TclError:
+                pass
+        self._recompute_job = self.win.after(180, self._recompute)
+
+    def _recompute(self):
+        self._recompute_job = None
+        specs = self._string_specs()
+        try:
+            numeric = dict(specs)
+            numeric["m_key" if self.kind_var.get() == "missile" else "i_key"] = 0
+            numeric = rd.str2num(numeric)
+            trj = bm.balmisflight(numeric)
+            if not np.any(trj):
+                raise ValueError("no trajectory (check propulsion/angle)")
+            self._last_trj = trj
+            self._draw_charts(trj, numeric)
+            rng = trj[len(trj) - 1, 2] * R_e / 1000.0
+            apo = (max(trj[:, 1]) - R_e) / 1000.0
+            vmax = max(trj[:, 3]) / 1000.0
+            self.status.config(text=f"range {rng:.0f} km · apogee {apo:.0f} km · v_max {vmax:.2f} km/s · flight {trj[-1,0]:.0f} s",
+                               fg=THEME["fg_muted"])
+        except Exception as exc:
+            self.status.config(text=f"Spec error: {exc}", fg="#dc2626")
+
+    def _stage_burnout_times(self, numeric):
+        tbu = numeric.get("t_bu", []); tdel = numeric.get("t_delay", [])
+        if isinstance(tbu, (int, float)): tbu = [tbu]
+        if isinstance(tdel, (int, float)): tdel = [tdel]
+        times, acc = [], 0.0
+        for i in range(len(tbu)):
+            acc += tbu[i]
+            times.append(acc)
+            acc += tdel[i] if i < len(tdel) else 0.0
+        return times
+
+    def _draw_atmosphere(self, ax, ymax):
+        for lo, hi, name, color in self.ATM_LAYERS:
+            if lo > ymax:
+                break
+            top = min(hi, ymax)
+            ax.axhspan(lo, top, color=color, alpha=0.45, zorder=0)
+            if top - lo > ymax * 0.04:
+                ax.text(0.012, (lo + top) / 2, name, transform=ax.get_yaxis_transform(),
+                        fontsize=6.5, va="center", color="#444", zorder=1)
+        if ymax >= self.KARMAN_KM * 0.6:
+            ax.axhline(self.KARMAN_KM, color="#111", ls=":", lw=1, zorder=1)
+            ax.text(0.99, self.KARMAN_KM, "Kármán 100 km", transform=ax.get_yaxis_transform(),
+                    fontsize=6.5, ha="right", va="bottom", color="#111", zorder=1)
+
+    def _draw_charts(self, trj, numeric):
+        is_int = self.kind_var.get() == "interceptor"
+        t = trj[:, 0]
+        alt = (trj[:, 1] - R_e) / 1000.0
+        grnd = trj[:, 2] * R_e / 1000.0
+        spd = trj[:, 3] / 1000.0
+        rng = grnd[-1]
+        for ax in (self.ax_traj, self.ax_speed, self.ax_map):
+            ax.clear()
+        ymax = max(alt.max() * 1.1, 12)
+
+        # --- trajectory + atmospheric layers ---
+        self._draw_atmosphere(self.ax_traj, ymax)
+        self.ax_traj.plot(grnd, alt, "-", color="#dc2626", lw=2, zorder=4)
+        # interceptor: shade the intercept-altitude window (mpia..maxia)
+        if is_int:
+            try:
+                mpia = float(self.vars["mpia"].get() or 0)
+                maxia = float(self.vars["maxia"].get() or 0)
+                if maxia > mpia >= 0:
+                    self.ax_traj.axhspan(mpia, maxia, color="#16a34a", alpha=0.18, zorder=2)
+                    self.ax_traj.text(0.5, (mpia + maxia) / 2, "intercept window",
+                                      transform=self.ax_traj.get_yaxis_transform(), fontsize=6.5,
+                                      ha="center", va="center", color="#166534", zorder=3)
+            except ValueError:
+                pass
+        # staging markers
+        burns = self._stage_burnout_times(numeric)
+        for si, bt in enumerate(burns):
+            k = int(np.searchsorted(t, bt))
+            if 0 < k < len(grnd):
+                self.ax_traj.plot([grnd[k]], [alt[k]], marker="^", ms=7, color="#111", zorder=5)
+                if len(burns) > 1:
+                    self.ax_traj.annotate(f"S{si+1}", (grnd[k], alt[k]), fontsize=6.5,
+                                          textcoords="offset points", xytext=(3, 3), zorder=5)
+        self.ax_traj.set_ylim(0, ymax)
+        self.ax_traj.set_title("Trajectory + atmosphere (drag ↕ = launch angle)", fontsize=9)
+        self.ax_traj.set_xlabel("ground range (km)", fontsize=8)
+        self.ax_traj.set_ylabel("altitude (km)", fontsize=8)
+        self.ax_traj.grid(alpha=0.25)
+
+        # --- speed (+ staging) ---
+        self.ax_speed.plot(t, spd, "-", color="#2563eb", lw=2)
+        for si, bt in enumerate(burns):
+            self.ax_speed.axvline(bt, color="#111", ls="--", lw=0.8, alpha=0.6)
+            if len(burns) > 1:
+                self.ax_speed.annotate(f"S{si+1}", (bt, spd.max()), fontsize=6.5,
+                                       textcoords="offset points", xytext=(2, -2))
+        self.ax_speed.set_title("Speed (dashed = staging)", fontsize=9)
+        self.ax_speed.set_xlabel("time (s)", fontsize=8)
+        self.ax_speed.set_ylabel("speed (km/s)", fontsize=8)
+        self.ax_speed.grid(alpha=0.3)
+
+        # --- top-down ground map (purpose-built per kind) ---
+        th = np.linspace(0, 2 * np.pi, 120)
+        self.ax_map.plot([0], [0], marker="*", ms=14, color="#16a34a")
+        self.ax_map.plot(rng * np.cos(th), rng * np.sin(th), "--", color="#7c3aed", lw=1.2,
+                         label="reach" if is_int else "max range")
+        self.ax_map.plot([0, rng], [0, 0], "-", color="#444", lw=1.2)
+        self._impact_pt, = self.ax_map.plot([rng], [0], marker="o", ms=10, color="#f59e0b",
+                                            markeredgecolor="#7c2d12")
+        rings_max = rng
+        if is_int:
+            for key, col, lbl in (("op_range", "#0891b2", "op range"), ("det_range", "#16a34a", "det range")):
+                try:
+                    raw = str(self.vars[key].get()).split(",")[0].split(":")[-1].strip()
+                    val = float(raw)
+                    if val <= 0:
+                        continue
+                    if val < 2000:  # km in the data convention
+                        pass
+                    self.ax_map.plot(val * np.cos(th), val * np.sin(th), ":", color=col, lw=1.4, label=lbl)
+                    rings_max = max(rings_max, val)
+                except (ValueError, IndexError):
+                    pass
+            self.ax_map.legend(loc="upper right", fontsize=6)
+            self.ax_map.set_title(f"Interceptor reach {rng:.0f} km (drag ● = range)", fontsize=9)
+        else:
+            self.ax_map.set_title(f"Ground map (drag ● to set range) — range {rng:.0f} km", fontsize=9)
+        self.ax_map.set_xlabel("km", fontsize=8)
+        self.ax_map.set_aspect("equal", adjustable="datalim")
+        lim = max(rings_max * 1.15, 10)
+        self.ax_map.set_xlim(-lim, lim); self.ax_map.set_ylim(-lim, lim)
+        self.ax_map.grid(alpha=0.3)
+        self.canvas.draw_idle()
+
+    # --------------------------------------------------------- mpl drag
+    def _on_mpl_press(self, event):
+        if event.inaxes is self.ax_traj:
+            self._drag = ("angle", event.y)
+        elif event.inaxes is self.ax_map and event.xdata is not None:
+            self._drag = ("range", None)
+
+    def _on_mpl_motion(self, event):
+        if self._drag is None or event.inaxes is None:
+            return
+        kind = self._drag[0]
+        if kind == "angle" and event.inaxes is self.ax_traj:
+            # vertical pixel drag -> change launch angle (drag up = more lofted)
+            dy = event.y - self._drag[1]
+            self._drag = ("angle", event.y)
+            ak = self._angle_key()
+            try:
+                cur = float(self.vars[ak].get() or 0)
+            except ValueError:
+                cur = 10.0
+            # lofted means smaller grav_turn_angle (from vertical) / larger flight_path_angle (from horizontal)
+            sign = -1.0 if ak == "grav_turn_angle" else 1.0
+            self._set_angle(cur + sign * dy * 0.15)
+            self._recompute()
+        elif kind == "range" and event.inaxes is self.ax_map and event.xdata is not None:
+            r = math.hypot(event.xdata, event.ydata)
+            if self._impact_pt is not None:
+                self._impact_pt.set_data([r], [0])
+                self.ax_map.set_title(f"Ground map — target {r:.0f} km (release to solve)", fontsize=9)
+                self.canvas.draw_idle()
+            self._drag = ("range", r)
+
+    def _on_mpl_release(self, event):
+        if self._drag is not None and self._drag[0] == "range" and self._drag[1]:
+            self._solve_angle_for_range(self._drag[1] * 1000.0)
+        self._drag = None
+
+    def _solve_angle_for_range(self, target_m):
+        """Set the launch angle so the missile reaches target_m ground range, using the
+        depressed-side launch-angle -> range table (same machinery as the footprint solver)."""
+        specs = self._string_specs()
+        kkey = "m_key" if self.kind_var.get() == "missile" else "i_key"
+        try:
+            s = dict(specs); s[kkey] = 0
+            numeric = rd.str2num(s)
+            tables = ss.build_mlp_tables(numeric, loft=False)
+            tr, ta = tables["tbl_ranges"], tables["tbl_angles"]
+            angle = float(np.interp(max(1.0, min(target_m, tables["max_range"])), tr, ta))
+            self._set_angle(angle)
+            self._recompute()
+        except Exception as exc:
+            self.status.config(text=f"Range solve failed: {exc}", fg="#dc2626")
+
+    # --------------------------------------------------------- AIP
+    def _autofill_aip(self):
+        desc = self.aip_text.get("1.0", "end").strip()
+        if not desc:
+            self.status.config(text="Type a description first.", fg="#dc2626")
+            return
+        self.status.config(text="Querying AIP…", fg=THEME["fg_muted"])
+        threading.Thread(target=self._aip_worker, args=(desc,), daemon=True).start()
+
+    def _aip_worker(self, desc):
+        try:
+            import using_aip
+            result = using_aip.query_missile(desc)
+        except Exception as exc:
+            self.win.after(0, lambda: self.status.config(text=f"AIP error: {exc}", fg="#dc2626"))
+            return
+        self.win.after(0, lambda: self._apply_aip(result))
+
+    def _apply_aip(self, result):
+        if not isinstance(result, dict):
+            self.status.config(text=f"AIP returned: {result}", fg="#dc2626")
+            return
+        stage_keys = {ck for ck, _ in self.STAGE_COLS}
+        applied = []
+        # let traj_type apply first so kind-specific fields land correctly
+        if result.get("traj_type"):
+            tt = str(result["traj_type"])
+            self.kind_var.set("interceptor" if tt.startswith("int") else "missile")
+            self._on_kind_change(apply_defaults=False)
+            self.vars["traj_type"].set(tt); applied.append("traj_type")
+        stage_overrides = {k: v for k, v in result.items() if k in stage_keys}
+        if stage_overrides:
+            # apply AIP stage values onto stage 1 (AIP returns scalars)
+            for k, v in stage_overrides.items():
+                self.stage_vars[0][k].set(str(v)); applied.append(k)
+            self._rebuild_stage_rows()
+        for k, v in result.items():
+            if k in ("traj_type",) or k in stage_keys:
+                continue
+            if k in self.vars:
+                self.vars[k].set(str(v)); applied.append(k)
+        self._sync_angle_label()
+        self.status.config(text=f"AIP filled: {', '.join(applied) or 'nothing matched'}", fg=THEME["fg_muted"])
+        self._recompute()
+
+    # --------------------------------------------------------- save
+    def _save_inject(self):
+        is_missile = self.kind_var.get() == "missile"
+        key_name = "m_key" if is_missile else "i_key"
+        group = self.app.rocket_data[0] if is_missile else self.app.rocket_data[1]
+        new_key = max([int(it.get(key_name, 0)) for it in group], default=0) + 1
+        entry = {key_name: new_key}
+        entry.update(self._stage_strings())          # m_st, m_fu, v_ex, t_bu, a_mid, t_delay
+        entry["type"] = self.vars["type"].get()
+        for key, _ in self.SINGLE_FIELDS:
+            entry[key] = self.vars[key].get()
+        entry["traj_type"] = self.vars["traj_type"].get()
+        entry[self._angle_key()] = self.vars[self._angle_key()].get()
+        entry["note"] = ""
+        if not is_missile:
+            for key, _ in self.INTERCEPTOR_FIELDS:
+                entry[key] = self.vars[key].get()
+        # validate it parses + flies before injecting
+        try:
+            test = dict(entry)
+            num = rd.str2num(test)
+            if not np.any(bm.balmisflight(num)):
+                raise ValueError("trajectory failed")
+        except Exception as exc:
+            messagebox.showerror("Save & Inject", f"Specs don't produce a valid trajectory:\n{exc}")
+            return
+        group.append(entry)
+        save_rocket_data(self.app.rocket_data)
+        self.app._missile_range_cache.clear()
+        kind = "missile" if is_missile else "interceptor"
+        prefix = "m" if is_missile else "i"
+        self.status.config(text=f"Injected {prefix}{new_key} '{entry['type']}' into the rocket library.",
+                           fg="#16a34a")
+        self.app._set_status(f"Builder: injected {kind} {prefix}{new_key} '{entry['type']}'")
+
+    def _close(self):
+        try:
+            self.win.destroy()
+        except tk.TclError:
+            pass
+        self.app._builder_win = None
 
 
 if __name__ == "__main__":

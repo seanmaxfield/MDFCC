@@ -14,6 +14,8 @@
     "angle_step": 20.0,
     "num_steps_mode2": 15,
     "set_shoot_look_shoot": true,
+    "set_sls_timed": false,
+    "sls_delay_s": 30.0,
     "det_range_list": "500, 900, 0",
     "mumi_list": "1,2",
     "muin_list": "1,2",

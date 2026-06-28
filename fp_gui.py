@@ -1,5 +1,6 @@
 from tkinter import *
 #from tkinter import Button, Label, Entry
+from tkinter import simpledialog, messagebox
 import tkinter.filedialog as fd
 
 #import tkinter as tk
@@ -2110,10 +2111,30 @@ def min_detrange() :
         
 
 
-def gui_footprint() :
+def gui_footprint(from_mlp=False) :
     m_type = mtype_var.get()
     i_type = itype_var.get()
     mode2 = fp_calc_mode_var.get()
+    mlp_dist_m = None
+    mlp_loft = False
+    if from_mlp :
+        # Footprint against a threat from one fixed launch point: the MLP->target
+        # range (and trajectory) changes per analyzed point. Mode-1 (fi/dist) only.
+        mode2 = False
+        d_km = simpledialog.askfloat(
+            "Footprint from launch point",
+            "Distance from interceptor site (ILP) to the threat launch point (km):",
+            minvalue=1.0, maxvalue=19000.0,
+        )
+        if not d_km :
+            print("Footprint from launch point cancelled.")
+            return False
+        mlp_dist_m = float(d_km) * 1000.0
+        mlp_loft = bool(messagebox.askyesno(
+            "Trajectory shape",
+            "Use a LOFTED trajectory for target points closer than max range?\n"
+            "(Yes = lofted / high & slow, No = depressed / flat & fast)",
+        ))
     emode_sls = emode_var.get()
     angle_step = angle_step_var.get()
     #angle_step_mode2 = angle_step_mode2_var.get()
@@ -2208,14 +2229,26 @@ def gui_footprint() :
         search_func = ss.sls_search
         search_type = "Shoot_Look_Shoot"
         save_label = "sls"
-        
+
+    fp_trj = trj
+    if from_mlp :
+        # Wrap the chosen interception search so each target point uses a trajectory
+        # flown to its own MLP->target range; size the search area to MLP + max range.
+        search_func, fmlp_max_range = ss.make_fixed_mlp_search(
+            missile_data, mlp_dist_m, loft=mlp_loft, s_func=search_func)
+        reach = mlp_dist_m + fmlp_max_range
+        fp_trj = np.array([[0.0, R_e, 0.0], [1.0, R_e, reach / R_e]])
+        save_label += "_mlp"
+        search_type += " (from launch point {:.0f} km, {})".format(
+            mlp_dist_m / 1000.0, "lofted" if mlp_loft else "depressed")
+
     print("Type of interception: " + search_type)
 
     if not mode2 :
-        footprint_tab = fp.footprint_calc_v2(search_func, 
-                                         trj,
+        footprint_tab = fp.footprint_calc_v2(search_func,
+                                         fp_trj,
                                          int_table,
-                                         h_int_min, 
+                                         h_int_min,
                                          maxia,
                                          t_int_lnc,
                                          angle_step,
@@ -5515,6 +5548,7 @@ if __name__ == '__main__':
     frame_fp.columnconfigure(0, weight=1)
     
     btn_footprint = Button(frame_fp, text='Missile Defense Footprint', command=lambda: call_longrun(gui_footprint))
+    btn_footprint_mlp = Button(frame_fp, text='Footprint from Launch Point', command=lambda: call_longrun(lambda: gui_footprint(from_mlp=True)))
     #btn_footprint2 = Button(frame_fp, text='BMD Footprint Mode2', command=gui_footprint2)
     btn_n_footprint = Button(frame_fp, text='Multi-Footprint by Detection Range', command=gui_multi_detrange_footprint)
     btn_probe_fprint = Button(frame_fp, text='Footprint by Probing', command=m.run_angle_dist_tab, state='disabled')
@@ -5529,14 +5563,17 @@ if __name__ == '__main__':
         ToolTip(btn_probing, msg="Build footprint by probing the area. For irregular-shaped footprints, computing-intensive", delay=1.0)
     
     btn_footprint.grid(column=0, row=0, sticky='ew')
-    #btn_footprint2.grid(column=0, row=1, sticky='ew')
-    btn_n_footprint.grid(column=0, row=1, sticky='ew')
-    btn_double_fprint.grid(column=0, row=2, sticky='ew')
-    btn_param_fprint.grid(column=0, row=3, sticky='ew')
-    btn_multi_missile_fprint.grid(column=0, row=4, sticky='ew')
-    btn_multi_interceptor_fprint.grid(column=0, row=5, sticky='ew')
+    btn_footprint_mlp.grid(column=0, row=1, sticky='ew')
+    #btn_footprint2.grid(column=0, row=2, sticky='ew')
+    btn_n_footprint.grid(column=0, row=2, sticky='ew')
+    btn_double_fprint.grid(column=0, row=3, sticky='ew')
+    btn_param_fprint.grid(column=0, row=4, sticky='ew')
+    btn_multi_missile_fprint.grid(column=0, row=5, sticky='ew')
+    btn_multi_interceptor_fprint.grid(column=0, row=6, sticky='ew')
     if show_extra_procs_var.get() :
-        btn_probing.grid(column=0, row=6, sticky='ew')
+        btn_probing.grid(column=0, row=7, sticky='ew')
+    if tooltips:
+        ToolTip(btn_footprint_mlp, msg="Footprint defended against a threat from ONE fixed launch point\n(you enter the ILP->launch-point distance). The MLP->target range and\ntrajectory vary per target point, unlike the standard max-range footprint.", delay=1.0)
     
     """ Missile Routines Frame """
     

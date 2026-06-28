@@ -513,9 +513,269 @@ def sls_search(trj, int_table, h_int_min, maxia, t_int_lnc, fi_opt, dist_opt, op
 
 
 def sls_search2(trj, int_table, h_int_min, maxia, t_int_lnc, omega, shift, op_range, det_range, t_delay=0, h_discr=0, debug_hits=False) :
-    return sls_search(trj, int_table, h_int_min, maxia, t_int_lnc, omega, shift, op_range, det_range, t_delay, h_discr, True, debug_hits)  
+    return sls_search(trj, int_table, h_int_min, maxia, t_int_lnc, omega, shift, op_range, det_range, t_delay, h_discr, True, debug_hits)
 
-                    
+
+def sls_timed_search(trj, int_table, h_int_min, maxia, t_int_lnc, fi_opt, dist_opt, op_range, det_range, sls_delay, t_delay=0, h_discr=0, mode2=False, debug_hits=False) :
+    """
+    Timed shoot-look-shoot search.
+
+    Like sls_search, but the moment the second interceptor is launched is set by
+    the user instead of being assumed equal to the first interception time.
+
+    Classic sls_search launches the second interceptor at the instant the first
+    interceptor would have reached the target (the first interception time).
+    Here, the second interceptor is instead launched a fixed 'sls_delay' seconds
+    after the FIRST interceptor was launched. Because the first interceptor's
+    launch time is (first interception time - first interceptor flight time),
+    setting sls_delay equal to the first interceptor's flight time reproduces the
+    classic shoot-look-shoot result; shorter delays give the second interceptor
+    more flight time (a larger footprint) and longer delays give it less (a
+    smaller footprint).
+
+    ----------
+    sls_delay :
+        seconds between the first and second interceptor launches.
+
+    All other parameters match short_search / sls_search.
+
+    Returns
+    -------
+    Coords and time of the second hit if found, False otherwise.
+    """
+    hit_1 = short_search(trj, int_table, h_int_min, maxia, t_int_lnc, fi_opt, dist_opt, op_range, det_range, t_delay, h_discr, mode2, debug_hits)
+    if hit_1 :
+        # first interceptor launch time = first interception (missile) time - first interceptor flight time
+        first_launch = hit_1[1][0] - hit_1[0][1]
+        t_int_lnc_2 = first_launch + sls_delay
+        hit_2 = short_search(trj, int_table, h_int_min, maxia, t_int_lnc_2, fi_opt, dist_opt, op_range, det_range, t_delay, h_discr, mode2, debug_hits, True)
+        if hit_2 :
+            sls_hit = hit_2
+        else :
+            sls_hit = False
+    else :
+        sls_hit = False
+
+    return sls_hit
+
+
+def make_sls_timed_search(sls_delay) :
+    """Return a search callable (non-mode2 s_func signature) with sls_delay bound in."""
+    def _sls_timed(trj, int_table, h_int_min, maxia, t_int_lnc, fi_opt, dist_opt, op_range, det_range, t_delay=0, h_discr=0, mode2=False, debug_hits=False) :
+        return sls_timed_search(trj, int_table, h_int_min, maxia, t_int_lnc, fi_opt, dist_opt, op_range, det_range, sls_delay, t_delay, h_discr, mode2, debug_hits)
+    return _sls_timed
+
+
+def make_sls_timed_search2(sls_delay) :
+    """Return a search callable (mode2 s_func signature) with sls_delay bound in."""
+    def _sls_timed2(trj, int_table, h_int_min, maxia, t_int_lnc, omega, shift, op_range, det_range, t_delay=0, h_discr=0, debug_hits=False) :
+        return sls_timed_search(trj, int_table, h_int_min, maxia, t_int_lnc, omega, shift, op_range, det_range, sls_delay, t_delay, h_discr, True, debug_hits)
+    return _sls_timed2
+
+
+# ---------------------------------------------------------------------------- #
+# Fixed launch-point footprint                                                 #
+#                                                                              #
+# The classic footprint assumes the threat always flies at its maximum range.  #
+# These helpers instead fix the missile LAUNCH point (MLP) at a known          #
+# geographic location: as the analyzed target point moves around the ILP, the  #
+# MLP->target range (and therefore the trajectory) changes per point.          #
+# ---------------------------------------------------------------------------- #
+FIXED_MLP_ANGLE_MIN = 0.05  # deg, launch-angle search lower bound (covers near-vertical optima)
+FIXED_MLP_ANGLE_MAX = 70.0  # deg, launch-angle search upper bound
+
+
+def _angle_key_for(missile_data) :
+    """Launch-angle parameter that shapes the trajectory for this missile type."""
+    if missile_data.get("traj_type") in ("bal_mis", "albm") :
+        return "grav_turn_angle"
+    return "flight_path_angle"
+
+
+def trj_for_range(missile_data, target_range_m, max_range, opt_angle, angle_key,
+                  loft=False, tol=0.01, max_iter=14) :
+    """
+    Native trajectory flown to a chosen range (<= max range) instead of max range.
+
+    Range is an output of balmisflight, governed by the launch angle. Below the
+    maximum there are two launch angles that reach a given range: a lofted
+    (steeper) and a depressed (flatter) one. This bisects the launch angle on the
+    requested side of the range-optimal angle so balmisflight reaches target_range_m.
+
+    Returns a trajectory array (as balmisflight) or False if not solvable.
+    """
+    if target_range_m <= 0 :
+        return False
+    md = dict(missile_data)
+    if target_range_m >= max_range :
+        md[angle_key] = opt_angle
+        return bm.balmisflight(md)
+
+    if loft :
+        lo, hi = FIXED_MLP_ANGLE_MIN, opt_angle
+    else :
+        lo, hi = opt_angle, FIXED_MLP_ANGLE_MAX
+
+    def rng(a) :
+        md[angle_key] = a
+        return bm.balmisflight(md, False)
+
+    r_lo = rng(lo)
+    r_hi = rng(hi)
+    increasing = r_hi > r_lo  # does range increase with angle on this bracket?
+    # target must be bracketed; if not, fall back to the optimum trajectory
+    if not (min(r_lo, r_hi) - tol * max_range <= target_range_m <= max(r_lo, r_hi) + tol * max_range) :
+        md[angle_key] = opt_angle
+        return bm.balmisflight(md)
+
+    mid = 0.5 * (lo + hi)
+    for _ in range(max_iter) :
+        mid = 0.5 * (lo + hi)
+        r_mid = rng(mid)
+        if abs(r_mid - target_range_m) <= tol * target_range_m :
+            break
+        if (r_mid < target_range_m) == increasing :
+            lo = mid
+        else :
+            hi = mid
+    md[angle_key] = mid
+    return bm.balmisflight(md)
+
+
+def mlp_to_target_range(ilp_mlp_dist_m, ilp_target_dist_m, fi_opt) :
+    """
+    Great-circle distance from the MLP to a target point, via the spherical law of
+    cosines on triangle (ILP, MLP, target): the ILP->MLP side is fixed, the
+    ILP->target side is dist_opt, and fi_opt is the angle at the ILP between them.
+    """
+    a = ilp_mlp_dist_m / R_e
+    b = ilp_target_dist_m / R_e
+    cos_c = cos(a) * cos(b) + sin(a) * sin(b) * cos(fi_opt)
+    cos_c = max(-1.0, min(1.0, cos_c))
+    return acos(cos_c) * R_e
+
+
+def build_range_angle_table(missile_data, angle_key, opt_angle, loft=False, table_n=24, power=3) :
+    """
+    Sample launch angle -> range on the chosen side of the range-optimal angle.
+
+    Anchored at opt_angle (the true range optimum, found separately) and sampled with a
+    power-law spacing that is dense near the optimum, so the steep range falloff next to
+    the peak -- which a uniform sweep jumps straight over for sharply-peaked missiles --
+    is resolved. Returns sorted (ranges, angles) for fast range->angle interpolation.
+    """
+    md = dict(missile_data)
+    a_far = FIXED_MLP_ANGLE_MIN if loft else FIXED_MLP_ANGLE_MAX
+    fracs = np.linspace(0.0, 1.0, table_n) ** power   # dense near opt_angle (steep region)
+    angles = opt_angle + (a_far - opt_angle) * fracs
+    ranges = np.array([bm.balmisflight(dict(md, **{angle_key: float(a)}), False) for a in angles])
+    order = np.argsort(ranges)
+    r_sorted, a_sorted = ranges[order], angles[order]
+    # drop duplicate ranges so np.interp sees a strictly increasing x axis
+    keep = np.concatenate(([True], np.diff(r_sorted) > 1.0))
+    return r_sorted[keep], a_sorted[keep]
+
+
+def build_mlp_tables(missile_data, loft=False, table_n=24) :
+    """
+    Per-missile setup for the fixed-launch-point solver: the range-optimal angle, max
+    range, and the launch-angle -> range table (and a shared trajectory cache). This is
+    the expensive part (balmis_angle_opt + table sampling); compute it ONCE and reuse it
+    across many launch points (e.g. a sampled box of MLPs) via make_fixed_mlp_search's
+    `tables=` argument.
+    """
+    angle_key = _angle_key_for(missile_data)
+    # balmis_angle_opt defaults to searching launch angles [1deg, 60deg]; missiles whose
+    # range-optimal angle is below 1deg (near-vertical optimum, e.g. m3 at 0.09deg) would be
+    # missed entirely and report a near-zero max range. Search from FIXED_MLP_ANGLE_MIN, and
+    # floor the result with the missile's own configured trajectory range as a safety net.
+    opt_range, opt_angle = bm.balmis_angle_opt(dict(missile_data),
+                                               gtangle_beg=FIXED_MLP_ANGLE_MIN, maxrange_acc=0.05)
+    cfg_angle = float(missile_data.get(angle_key, opt_angle))
+    cfg_range = bm.balmisflight(dict(missile_data), False)  # range at the configured angle
+    if cfg_range >= opt_range :
+        opt_range, opt_angle = cfg_range, cfg_angle
+    max_range = opt_range
+    tbl_ranges, tbl_angles = build_range_angle_table(missile_data, angle_key, opt_angle, loft, table_n)
+    r_min, r_max = float(tbl_ranges[0]), float(tbl_ranges[-1])
+    max_range = max(max_range, r_max)  # dense table peak is finer than the coarse optimizer
+    return {
+        "angle_key": angle_key, "max_range": max_range,
+        "tbl_ranges": tbl_ranges, "tbl_angles": tbl_angles,
+        "r_min": r_min, "r_max": r_max,
+        "trj_cache": {},  # shared across launch points of the same missile
+    }
+
+
+def make_fixed_mlp_search(missile_data, ilp_mlp_dist_m, loft=False,
+                          s_func=None, range_quantum_m=3000.0, table_n=24, tables=None) :
+    """
+    Build an s_func (non-mode2 footprint signature) that defends a fixed launch point.
+
+    For each analyzed target point (fi_opt, dist_opt) relative to the ILP it derives
+    the MLP->target range, flies the native trajectory to that range, then runs the
+    given interception search (short_search by default, or e.g. sls_search). The threat
+    is placed from the FIXED launch point via shift+omega (no launch-point root ambiguity).
+
+    Pass `tables` (from build_mlp_tables) to reuse the per-missile setup and trajectory
+    cache across many launch points; otherwise it is built here.
+
+    Returns (s_func, max_range_m).
+    """
+    base_search = s_func if s_func is not None else short_search
+    if tables is None :
+        tables = build_mlp_tables(missile_data, loft, table_n)
+    angle_key = tables["angle_key"]
+    max_range = tables["max_range"]
+    tbl_ranges, tbl_angles = tables["tbl_ranges"], tables["tbl_angles"]
+    r_min, r_max = tables["r_min"], tables["r_max"]
+    trj_cache = tables["trj_cache"]
+    # the launch point cannot sit beyond the missile's own reach. When it is placed at
+    # (or numerically just past) max range -- e.g. on the max-range threat arc -- nudge it
+    # just inside so the ILP itself is defendable rather than exactly on the unreachable limit.
+    ilp_mlp_dist_m = min(ilp_mlp_dist_m, max_range * 0.999)
+    md_template = dict(missile_data)
+
+    def _cached_trj(R) :
+        key = int(round(R / range_quantum_m))
+        if key not in trj_cache :
+            # only solvable for ranges the chosen side actually spans (e.g. the lofted
+            # side cannot reach far below max range)
+            if R < r_min - range_quantum_m or R > r_max + range_quantum_m :
+                trj_cache[key] = False
+            else :
+                angle = float(np.interp(R, tbl_ranges, tbl_angles))
+                md_template[angle_key] = angle
+                trj_cache[key] = bm.balmisflight(dict(md_template))
+        return trj_cache[key]
+
+    def _search(t_trj, int_table, h_int_min, maxia, t_int_lnc, fi_opt, dist_opt,
+                op_range, det_range, t_delay=0, h_discr=0) :
+        D = ilp_mlp_dist_m
+        R = mlp_to_target_range(D, dist_opt, fi_opt)
+        if R <= 0 or R >= max_range :
+            return False
+        trj_R = _cached_trj(R)
+        if trj_R is False or not np.any(trj_R) :
+            return False
+        # Place the threat from the FIXED launch point using the trajectory-plane angle
+        # omega and shift = D directly (mode2), instead of the (fi, dist) parameterization.
+        # The (fi, dist) form has a two-root launch-point ambiguity: when the target sits
+        # beyond the launch point along the boresight it reconstructs the *wrong* launch
+        # point. omega is the angle at the MLP in the spherical triangle ILP-MLP-target.
+        gM, gR, gI = D / R_e, R / R_e, dist_opt / R_e
+        sM, sR = sin(gM), sin(gR)
+        if sM < eps or sR < eps :
+            omega = 0.0
+        else :
+            cos_omega = (cos(gI) - cos(gM) * cos(gR)) / (sM * sR)
+            omega = acos(max(-1.0, min(1.0, cos_omega)))
+        return base_search(trj_R, int_table, h_int_min, maxia, t_int_lnc, omega, D,
+                           op_range, det_range, t_delay, h_discr, True)
+
+    return _search, max_range
+
+
 def angle_dist_tab2(s_func,
                     t_trj,
                     t_itable,
